@@ -21,12 +21,11 @@ typedef struct Vertex {
 } Vertex;
 
 typedef struct Uniform {
-    mat4 projection;
+    mat4 view_proj;
 } Uniform;
 
 typedef struct PushConstants {
     mat4 model;
-    mat4 view;
 } PushConstants;
 
 static GLFWwindow* create_window();
@@ -371,11 +370,21 @@ static void render_swapchain_dependent_init(VkRender* self)
     // Upload projection matrices
     Uniform uniform;
     // TODO query window size
+    mat4 view;
+    vec3 eye = {4.0, 1.0, -10.0};
+    vec3 up = {0.0, 1.0, 0.0};
+    vec3 center = {4.0, 1.0, 0.0};
+    glm_lookat(eye, center, up, view);
+
+    mat4 proj;
     glm_perspective_default(
             self->swapchain_extent.width / (float) self->swapchain_extent.height,
-            uniform.projection);
-    uniform.projection[0][0] *= -1;
-    uniform.projection[1][1] *= -1;
+            proj);
+    proj[0][0] *= -1;
+    proj[1][1] *= -1;
+
+    glm_mat4_mul(proj, view, uniform.view_proj);
+
     for (size_t i=0; i < self->swapchain_image_count; i++) {
         upload_to_device_local_buffer(
                 (void*) &uniform,
@@ -476,12 +485,7 @@ static void render_loop(VkRender* self)
 static void render_draw_frame(VkRender* self) {
     PushConstants push_constants = {
         .model = GLM_MAT4_IDENTITY_INIT,
-        .view = GLM_MAT4_IDENTITY_INIT,
     };
-    vec3 eye = {4.0, 1.0, -10.0};
-    vec3 up = {0.0, 1.0, 0.0};
-    vec3 center = {4.0, 1.0, 0.0};
-    glm_lookat(eye, center, up, push_constants.view);
     // TODO change to one-frame command buffer
     self->command_buffers = record_command_buffers(
             self->device,
