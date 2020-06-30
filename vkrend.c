@@ -231,44 +231,9 @@ static void render_init(VkRender* self) {
     self->graphics_command_pool = create_command_pool(
             self->device, self->graphics_family);
 
-    Vertex vertices[3] = {
-        {
-            .position = {1.0, 1.0, 3.0},
-            .color = {1.0, 1.0, 1.0},
-        },
-        {
-            .position = {2.0, 1.0, 3.0},
-            .color = {1.0, 1.0, 1.0},
-        },
-        {
-            .position = {3.0, 3.0, 3.0},
-            .color = {1.0, 1.0, 1.0},
-        },
-    };
-    self->vertex_buffer = device_local_buffer_from_data(
-            (void*) vertices,
-            sizeof(Vertex) * 3,
-            VK_BUFFER_USAGE_VERTEX_BUFFER_BIT,
-            self->physical_device,
-            self->device,
-            self->graphics_queue,
-            self->graphics_command_pool,
-            &self->vertex_buffer_memory
-    );
+    self->vertex_buffer = VK_NULL_HANDLE;
+    self->index_buffer = VK_NULL_HANDLE;
 
-    uint16_t indices[3] = {
-        0, 1, 2
-    };
-    self->index_buffer = device_local_buffer_from_data(
-            (void*) indices,
-            sizeof(uint16_t) * 3,
-            VK_BUFFER_USAGE_INDEX_BUFFER_BIT,
-            self->physical_device,
-            self->device,
-            self->graphics_queue,
-            self->graphics_command_pool,
-            &self->index_buffer_memory
-    );
     self->descriptor_set_layout = create_descriptor_set_layout(self->device);
 
     render_swapchain_dependent_init(self);
@@ -400,6 +365,32 @@ static void render_swapchain_dependent_init(VkRender* self)
     self->current_frame = 0;
 }
 
+void render_upload_world_mesh(
+        VkRender* self, Vertex* vertices, size_t vertex_count,
+        uint16_t* indices, size_t index_count) {
+    self->vertex_buffer = device_local_buffer_from_data(
+            (void*) vertices,
+            sizeof(Vertex) * vertex_count,
+            VK_BUFFER_USAGE_VERTEX_BUFFER_BIT,
+            self->physical_device,
+            self->device,
+            self->graphics_queue,
+            self->graphics_command_pool,
+            &self->vertex_buffer_memory
+    );
+    self->index_buffer = device_local_buffer_from_data(
+            (void*) indices,
+            sizeof(uint16_t) * index_count,
+            VK_BUFFER_USAGE_INDEX_BUFFER_BIT,
+            self->physical_device,
+            self->device,
+
+            self->graphics_queue,
+            self->graphics_command_pool,
+            &self->index_buffer_memory
+    );
+}
+
 static void cleanup_swapchain(VkRender* self)
 {
     free(self->descriptor_sets);
@@ -459,11 +450,15 @@ static void render_cleanup(VkRender* self)
 
     vkDestroyDescriptorSetLayout(self->device, self->descriptor_set_layout, NULL);
 
-    vkDestroyBuffer(self->device, self->index_buffer, NULL);
-    vkFreeMemory(self->device, self->index_buffer_memory, NULL);
+    if (self->index_buffer != VK_NULL_HANDLE) {
+        vkDestroyBuffer(self->device, self->index_buffer, NULL);
+        vkFreeMemory(self->device, self->index_buffer_memory, NULL);
+    }
 
-    vkDestroyBuffer(self->device, self->vertex_buffer, NULL);
-    vkFreeMemory(self->device, self->vertex_buffer_memory, NULL);
+    if (self->vertex_buffer != VK_NULL_HANDLE) {
+        vkDestroyBuffer(self->device, self->vertex_buffer, NULL);
+        vkFreeMemory(self->device, self->vertex_buffer_memory, NULL);
+    }
 
     vkDestroyCommandPool(self->device, self->graphics_command_pool, NULL);
     vkDestroyDevice(self->device, NULL);
@@ -2093,6 +2088,26 @@ int main()
 {
     VkRender render;
     render_init(&render);
+
+    Vertex vertices[3] = {
+        {
+            .position = {1.0, 1.0, 3.0},
+            .color = {1.0, 1.0, 1.0},
+        },
+        {
+            .position = {2.0, 1.0, 3.0},
+            .color = {1.0, 1.0, 1.0},
+        },
+        {
+            .position = {3.0, 3.0, 3.0},
+            .color = {1.0, 1.0, 1.0},
+        },
+    };
+    uint16_t indices[3] = {
+        0, 1, 2
+    };
+    render_upload_world_mesh(&render, vertices, 3, indices, 3);
+
     render_loop(&render);
     render_cleanup(&render);
     printf("%s", "Success!\n");
