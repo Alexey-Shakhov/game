@@ -19,6 +19,7 @@ out gl_PerVertex {
 };
 
 void main() {
-    gl_Position = uni.projection * push_consts.view * push_consts.model * vec4(position, 1.0);
+    gl_Position = uni.projection * push_consts.view *
+        push_consts.model * vec4(position, 1.0);
     out_color = vec3(1.0, 1.0, 1.0);
 }

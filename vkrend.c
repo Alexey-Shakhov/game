@@ -10,13 +10,10 @@
 #define GLFW_INCLUDE_VULKAN
 #include <GLFW/glfw3.h>
 
-#define GLM_FORCE_RADIANS
-#define GLM_FORCE_DEPTH_ZERO_TO_ONE
-#define GLM_ENABLE_EXPERIMENTAL
 #include <cglm/cglm.h>
 
-#define APP_NAME "Koo"
-#define ENGINE_NAME "Lightwing"
+#define APP_NAME "DarkCraft"
+#define ENGINE_NAME "None"
 
 typedef struct Vertex {
     vec3 position;
@@ -211,6 +208,10 @@ typedef struct VkRender {
     size_t current_frame;
 } VkRender;
 
+static void render_draw_frame(VkRender* self);
+static void render_swapchain_dependent_init(VkRender* self);
+static void recreate_swapchain(VkRender* self);
+
 static void render_init(VkRender* self) {
     self->window = create_window();
     self->instance = create_instance();
@@ -233,15 +234,15 @@ static void render_init(VkRender* self) {
 
     Vertex vertices[3] = {
         {
-            .position = {1.0, 1.0, 1.0},
+            .position = {1.0, 1.0, 3.0},
             .color = {1.0, 1.0, 1.0},
         },
         {
-            .position = {2.0, 1.0, 1.0},
+            .position = {2.0, 1.0, 3.0},
             .color = {1.0, 1.0, 1.0},
         },
         {
-            .position = {2.0, 2.0, 1.0},
+            .position = {3.0, 3.0, 3.0},
             .color = {1.0, 1.0, 1.0},
         },
     };
@@ -269,7 +270,13 @@ static void render_init(VkRender* self) {
             self->graphics_command_pool,
             &self->index_buffer_memory
     );
+    self->descriptor_set_layout = create_descriptor_set_layout(self->device);
 
+    render_swapchain_dependent_init(self);
+}
+
+static void render_swapchain_dependent_init(VkRender* self)
+{
     self->swapchain = create_swapchain(
             self->physical_device,
             self->device,
@@ -282,13 +289,6 @@ static void render_init(VkRender* self) {
             &self->swapchain_image_count,
             &self->swapchain_images
     );
-    create_sync_objects(
-            self->device,
-            self->swapchain_image_count,
-            &self->commands_executed_fences,
-            &self->image_available_semaphores,
-            &self->draw_finished_semaphores
-    );
     self->swapchain_image_views = create_swapchain_image_views(
             self->device,
             self->swapchain_format,
@@ -300,7 +300,6 @@ static void render_init(VkRender* self) {
             self->physical_device,
             self->device
     );
-    self->descriptor_set_layout = create_descriptor_set_layout(self->device);
     self->graphics_pipeline = create_graphics_pipeline(
             self->device,
             self->swapchain_extent,
@@ -339,6 +338,13 @@ static void render_init(VkRender* self) {
             self->render_pass,
             self->swapchain_extent
     );
+    create_sync_objects(
+            self->device,
+            self->swapchain_image_count,
+            &self->commands_executed_fences,
+            &self->image_available_semaphores,
+            &self->draw_finished_semaphores
+    );
 
     VkDescriptorType descriptor_types[1] = { VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER };
     self->descriptor_pool = create_descriptor_pool(
@@ -363,8 +369,13 @@ static void render_init(VkRender* self) {
     );
 
     // Upload projection matrices
-    Uniform uniform = { .projection =  GLM_MAT4_IDENTITY_INIT };
-    glm_perspective_default((1366.0 / 768), uniform.projection);
+    Uniform uniform;
+    // TODO query window size
+    glm_perspective_default(
+            self->swapchain_extent.width / (float) self->swapchain_extent.height,
+            uniform.projection);
+    uniform.projection[0][0] *= -1;
+    uniform.projection[1][1] *= -1;
     for (size_t i=0; i < self->swapchain_image_count; i++) {
         upload_to_device_local_buffer(
                 (void*) &uniform,
@@ -380,12 +391,21 @@ static void render_init(VkRender* self) {
     self->current_frame = 0;
 }
 
-static void render_cleanup(VkRender* self)
+static void cleanup_swapchain(VkRender* self)
 {
-    free(self->command_buffers);
-
     free(self->descriptor_sets);
     vkDestroyDescriptorPool(self->device, self->descriptor_pool, NULL);
+
+    for (size_t i=0; i < self->swapchain_image_count; i++) {
+        vkDestroySemaphore(
+                self->device, self->image_available_semaphores[i], NULL);
+        vkDestroySemaphore(
+                self->device, self->draw_finished_semaphores[i], NULL);
+        vkDestroyFence(self->device, self->commands_executed_fences[i], NULL);
+    }
+    free(self->image_available_semaphores);
+    free(self->draw_finished_semaphores);
+    free(self->commands_executed_fences);
 
     for (size_t i=0; i < self->swapchain_image_count; i++) {
         vkDestroyFramebuffer(self->device, self->framebuffers[i], NULL);
@@ -402,26 +422,15 @@ static void render_cleanup(VkRender* self)
 
     vkDestroyPipeline(self->device, self->graphics_pipeline, NULL);
     vkDestroyPipelineLayout(self->device, self->graphics_pipeline_layout, NULL);
-    vkDestroyDescriptorSetLayout(self->device, self->descriptor_set_layout, NULL);
+
     vkDestroyRenderPass(self->device, self->render_pass, NULL);
+
     for (uint32_t i=0; i < self->swapchain_image_count; i++) {
         vkDestroyImageView(self->device, self->swapchain_image_views[i], NULL);
     }
+
     free(self->swapchain_image_views);
     free(self->swapchain_images);
-
-    for (size_t i=0; i < self->swapchain_image_count; i++) {
-        vkDestroySemaphore(
-                self->device, self->image_available_semaphores[i], NULL);
-        vkDestroySemaphore(
-                self->device, self->draw_finished_semaphores[i], NULL);
-        vkDestroyFence(self->device, self->commands_executed_fences[i], NULL);
-    }
-    free(self->image_available_semaphores);
-    free(self->draw_finished_semaphores);
-    free(self->commands_executed_fences);
-
-    vkDestroySwapchainKHR(self->device, self->swapchain, NULL);
 
     for (size_t i=0; i < self->swapchain_image_count; i++) {
         vkDestroyBuffer(self->device, self->uniform_buffers[i], NULL);
@@ -429,6 +438,17 @@ static void render_cleanup(VkRender* self)
     }
     free(self->uniform_buffers);
     free(self->uniform_buffers_memories);
+
+    vkDestroySwapchainKHR(self->device, self->swapchain, NULL);
+}
+
+static void render_cleanup(VkRender* self)
+{
+    cleanup_swapchain(self);
+
+    free(self->command_buffers);
+
+    vkDestroyDescriptorSetLayout(self->device, self->descriptor_set_layout, NULL);
 
     vkDestroyBuffer(self->device, self->index_buffer, NULL);
     vkFreeMemory(self->device, self->index_buffer_memory, NULL);
@@ -444,7 +464,6 @@ static void render_cleanup(VkRender* self)
     glfwTerminate();
 }
 
-static void render_draw_frame(VkRender* self);
 static void render_loop(VkRender* self)
 {
     while (!glfwWindowShouldClose(self->window)) {
@@ -459,9 +478,9 @@ static void render_draw_frame(VkRender* self) {
         .model = GLM_MAT4_IDENTITY_INIT,
         .view = GLM_MAT4_IDENTITY_INIT,
     };
-    vec3 eye = {0.0, 0.0, -1.0};
-    vec3 up = {0.0, 0.0, -1.0};
-    vec3 center = {0.0, 0.0, 0.0};
+    vec3 eye = {4.0, 1.0, -10.0};
+    vec3 up = {0.0, 1.0, 0.0};
+    vec3 center = {4.0, 1.0, 0.0};
     glm_lookat(eye, center, up, push_constants.view);
     // TODO change to one-frame command buffer
     self->command_buffers = record_command_buffers(
@@ -490,8 +509,12 @@ static void render_draw_frame(VkRender* self) {
                 self->image_available_semaphores[current_frame], VK_NULL_HANDLE,
                 &image_index);
 
-    if (acquire_image_result != VK_SUCCESS) {
-        errprint("Swapchain out of date.");
+    if (acquire_image_result == VK_ERROR_OUT_OF_DATE_KHR) {
+        recreate_swapchain(self);
+        return;
+    } else if (acquire_image_result != VK_SUCCESS &&
+            acquire_image_result != VK_SUBOPTIMAL_KHR) {
+        errprint("Failed to acquire swapchain image.");
         exit(EXIT_FAILURE);
     }
 
@@ -525,7 +548,10 @@ static void render_draw_frame(VkRender* self) {
     };
 
     VkResult present_result = vkQueuePresentKHR(self->present_queue, &present_info);
-    if (present_result != VK_SUCCESS) {
+    if (present_result == VK_ERROR_OUT_OF_DATE_KHR ||
+            present_result == VK_SUBOPTIMAL_KHR) {
+        recreate_swapchain(self);
+    } else if (present_result != VK_SUCCESS) {
         errprint("Failed to present swapchain image.");
         exit(EXIT_FAILURE);
     }
@@ -549,7 +575,7 @@ static GLFWwindow* create_window()
     glfwWindowHint(GLFW_REFRESH_RATE, mode->refreshRate);
      
     return glfwCreateWindow(
-            mode->width, mode->height, "My Title", monitor, NULL);
+            mode->width, mode->height, APP_NAME, monitor, NULL);
 }
 
 static VkInstance create_instance()
@@ -557,10 +583,10 @@ static VkInstance create_instance()
     VkApplicationInfo appInfo = {
         .sType = VK_STRUCTURE_TYPE_APPLICATION_INFO,
         .pApplicationName = APP_NAME,
-        .applicationVersion = VK_MAKE_VERSION(1, 0, 0),
+        .applicationVersion = VK_MAKE_VERSION(0, 0, 1),
         .pEngineName = ENGINE_NAME,
-        .engineVersion = VK_MAKE_VERSION(1, 0, 0),
-        .apiVersion = VK_API_VERSION_1_2,
+        .engineVersion = VK_MAKE_VERSION(0, 0, 1),
+        .apiVersion = VK_API_VERSION_1_0,
     };
 
     uint32_t glfw_ext_count;
@@ -1225,8 +1251,8 @@ static VkPipeline create_graphics_pipeline(
         .sType = VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO,
         .depthClampEnable = VK_FALSE,
         .rasterizerDiscardEnable = VK_FALSE,
-        .polygonMode = VK_POLYGON_MODE_FILL,
         .lineWidth = 1.0f,
+        .polygonMode = VK_POLYGON_MODE_FILL,
         .cullMode = VK_CULL_MODE_FRONT_BIT,
         .frontFace = VK_FRONT_FACE_CLOCKWISE,
         .depthBiasEnable = VK_FALSE,
@@ -1969,8 +1995,7 @@ static VkCommandBuffer* record_command_buffers(
         PushConstants* push_constants
 ) {
     VkCommandBuffer* command_buffers = malloc_check(
-            sizeof(VkCommandBuffer) * swapchain_image_count);
-
+            sizeof(VkCommandBuffer) * swapchain_image_count); 
     VkCommandBufferAllocateInfo allocate_info = {
         .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO,
         .commandPool = command_pool,
@@ -2042,6 +2067,22 @@ static VkCommandBuffer* record_command_buffers(
     }
 
     return command_buffers;
+}
+
+static void recreate_swapchain(VkRender* self)
+{
+    int width = 0, height = 0;
+    while (width == 0 || height == 0)
+    {
+        glfwGetFramebufferSize(self->window, &width, &height);
+        glfwWaitEvents();
+    }
+
+    vkDeviceWaitIdle(self->device);
+
+    cleanup_swapchain(self);
+
+    render_swapchain_dependent_init(self);
 }
 
 int main()
