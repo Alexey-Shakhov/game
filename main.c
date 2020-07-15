@@ -32,7 +32,7 @@ void render_test()
 
 int main()
 {
-    mem_init(1024);
+    mem_init(MBS(512));
 
     void* pt3 = mem_alloc(68);
     void* pt4 = mem_alloc(63);
@@ -47,6 +47,7 @@ int main()
     mem_free(pt2);
     mem_free(pt4);
     mem_inspect();
+    render_test();
 
     printf("%s", "Success!\n");
     return EXIT_SUCCESS;
