@@ -5,7 +5,7 @@
 #include <limits.h>
 #include <assert.h>
 
-#include "vkrend.h"
+#include "platform.h"
 #include "utils.h"
 #include "alloc.h"
 
@@ -152,7 +152,7 @@ const char *const DEVICE_EXTENSIONS[DEVICE_EXTENSION_COUNT] = {
 #define VERTEX_SHADER_PATH "./shaders/vert.spv"
 #define FRAGMENT_SHADER_PATH "./shaders/frag.spv"
 
-typedef struct VkRender {
+typedef struct Render {
     GLFWwindow* window;
     VkInstance instance;
     VkSurfaceKHR surface;
@@ -204,14 +204,14 @@ typedef struct VkRender {
     VkCommandBuffer* command_buffers;
 
     size_t current_frame;
-} VkRender;
+} Render;
 
-static void render_draw_frame(VkRender* self);
-static void render_swapchain_dependent_init(VkRender* self);
-static void recreate_swapchain(VkRender* self);
+static void render_draw_frame(Render* self);
+static void render_swapchain_dependent_init(Render* self);
+static void recreate_swapchain(Render* self);
 
-VkRender* render_init() {
-    VkRender* self = (VkRender*) mem_alloc(sizeof(VkRender));
+Render* render_init() {
+    Render* self = (Render*) mem_alloc(sizeof(Render));
     self->window = create_window();
     self->instance = create_instance();
 
@@ -240,7 +240,7 @@ VkRender* render_init() {
     return self;
 }
 
-static void render_swapchain_dependent_init(VkRender* self)
+static void render_swapchain_dependent_init(Render* self)
 {
     self->swapchain = create_swapchain(
             self->physical_device,
@@ -367,7 +367,7 @@ static void render_swapchain_dependent_init(VkRender* self)
 }
 
 void render_upload_map_mesh(
-        VkRender* self, Vertex* vertices, size_t vertex_count,
+        Render* self, Vertex* vertices, size_t vertex_count,
         uint16_t* indices, size_t index_count) {
     self->vertex_buffer = device_local_buffer_from_data(
             (void*) vertices,
@@ -392,7 +392,7 @@ void render_upload_map_mesh(
     );
 }
 
-static void cleanup_swapchain(VkRender* self)
+static void cleanup_swapchain(Render* self)
 {
     free(self->descriptor_sets);
     vkDestroyDescriptorPool(self->device, self->descriptor_pool, NULL);
@@ -443,7 +443,7 @@ static void cleanup_swapchain(VkRender* self)
     vkDestroySwapchainKHR(self->device, self->swapchain, NULL);
 }
 
-void render_destroy(VkRender* self)
+void render_destroy(Render* self)
 {
     cleanup_swapchain(self);
 
@@ -471,7 +471,7 @@ void render_destroy(VkRender* self)
     mem_free(self);
 }
 
-void render_loop(VkRender* self)
+void render_loop(Render* self)
 {
     while (!glfwWindowShouldClose(self->window)) {
         glfwPollEvents();
@@ -480,7 +480,7 @@ void render_loop(VkRender* self)
     vkDeviceWaitIdle(self->device);
 }
 
-static void render_draw_frame(VkRender* self) {
+static void render_draw_frame(Render* self) {
     PushConstants push_constants = {
         .model = GLM_MAT4_IDENTITY_INIT,
     };
@@ -2071,7 +2071,7 @@ static VkCommandBuffer* record_command_buffers(
     return command_buffers;
 }
 
-static void recreate_swapchain(VkRender* self)
+static void recreate_swapchain(Render* self)
 {
     int width = 0, height = 0;
     while (width == 0 || height == 0)
@@ -2085,4 +2085,41 @@ static void recreate_swapchain(VkRender* self)
     cleanup_swapchain(self);
 
     render_swapchain_dependent_init(self);
+}
+
+void render_test()
+{
+    Render* render = render_init();
+
+    Vertex vertices[3] = {
+        {
+            .position = {2.0, 1.0, 20.0},
+            .color = {1.0, 1.0, 1.0},
+        },
+        {
+            .position = {1.0, 1.0, 20.0},
+            .color = {1.0, 1.0, 1.0},
+        },
+        {
+            .position = {3.0, 3.0, 20.0},
+            .color = {1.0, 1.0, 1.0},
+        },
+    };
+    uint16_t indices[3] = {
+        0, 1, 2
+    };
+    render_upload_map_mesh(render, vertices, 3, indices, 3);
+
+    render_loop(render);
+    render_destroy(render);
+}
+
+int main()
+{
+    mem_init(MBS(512));
+
+    render_test();
+
+    printf("%s", "Success!\n");
+    return EXIT_SUCCESS;
 }
