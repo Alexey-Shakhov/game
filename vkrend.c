@@ -5,7 +5,9 @@
 #include <limits.h>
 #include <assert.h>
 
+#include "vkrend.h"
 #include "utils.h"
+#include "alloc.h"
 
 #define GLFW_INCLUDE_VULKAN
 #include <GLFW/glfw3.h>
@@ -15,10 +17,7 @@
 #define APP_NAME "DarkCraft"
 #define ENGINE_NAME "None"
 
-typedef struct Vertex {
-    vec3 position;
-    vec3 color;
-} Vertex;
+#define CRAFT_BLOCK_SIZE 1.0f
 
 typedef struct Uniform {
     mat4 view_proj;
@@ -211,7 +210,8 @@ static void render_draw_frame(VkRender* self);
 static void render_swapchain_dependent_init(VkRender* self);
 static void recreate_swapchain(VkRender* self);
 
-static void render_init(VkRender* self) {
+VkRender* render_init() {
+    VkRender* self = (VkRender*) mem_alloc(sizeof(VkRender));
     self->window = create_window();
     self->instance = create_instance();
 
@@ -237,6 +237,7 @@ static void render_init(VkRender* self) {
     self->descriptor_set_layout = create_descriptor_set_layout(self->device);
 
     render_swapchain_dependent_init(self);
+    return self;
 }
 
 static void render_swapchain_dependent_init(VkRender* self)
@@ -365,7 +366,7 @@ static void render_swapchain_dependent_init(VkRender* self)
     self->current_frame = 0;
 }
 
-void render_upload_world_mesh(
+void render_upload_map_mesh(
         VkRender* self, Vertex* vertices, size_t vertex_count,
         uint16_t* indices, size_t index_count) {
     self->vertex_buffer = device_local_buffer_from_data(
@@ -442,7 +443,7 @@ static void cleanup_swapchain(VkRender* self)
     vkDestroySwapchainKHR(self->device, self->swapchain, NULL);
 }
 
-static void render_cleanup(VkRender* self)
+void render_destroy(VkRender* self)
 {
     cleanup_swapchain(self);
 
@@ -466,9 +467,11 @@ static void render_cleanup(VkRender* self)
     vkDestroyInstance(self->instance, NULL);
     glfwDestroyWindow(self->window);
     glfwTerminate();
+
+    mem_free(self);
 }
 
-static void render_loop(VkRender* self)
+void render_loop(VkRender* self)
 {
     while (!glfwWindowShouldClose(self->window)) {
         glfwPollEvents();
@@ -1253,7 +1256,7 @@ static VkPipeline create_graphics_pipeline(
         .lineWidth = 1.0f,
         .polygonMode = VK_POLYGON_MODE_FILL,
         .cullMode = VK_CULL_MODE_FRONT_BIT,
-        .frontFace = VK_FRONT_FACE_CLOCKWISE,
+        .frontFace = VK_FRONT_FACE_COUNTER_CLOCKWISE,
         .depthBiasEnable = VK_FALSE,
     };
 
@@ -2082,34 +2085,4 @@ static void recreate_swapchain(VkRender* self)
     cleanup_swapchain(self);
 
     render_swapchain_dependent_init(self);
-}
-
-int main()
-{
-    VkRender render;
-    render_init(&render);
-
-    Vertex vertices[3] = {
-        {
-            .position = {1.0, 1.0, 3.0},
-            .color = {1.0, 1.0, 1.0},
-        },
-        {
-            .position = {2.0, 1.0, 3.0},
-            .color = {1.0, 1.0, 1.0},
-        },
-        {
-            .position = {3.0, 3.0, 3.0},
-            .color = {1.0, 1.0, 1.0},
-        },
-    };
-    uint16_t indices[3] = {
-        0, 1, 2
-    };
-    render_upload_world_mesh(&render, vertices, 3, indices, 3);
-
-    render_loop(&render);
-    render_cleanup(&render);
-    printf("%s", "Success!\n");
-    return EXIT_SUCCESS;
 }
