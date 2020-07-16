@@ -1,4 +1,5 @@
 #include "utils.h"
+#include "alloc.h"
 
 #include <stdio.h>
 
@@ -6,8 +7,13 @@ void errprint(const char* const err) {
     fprintf(stderr, "%s", err);
 }
 
+void fatal(const char* const err) {
+    fprintf(stderr, "%s", err);
+    exit(EXIT_FAILURE);
+}
+
 void* malloc_check(size_t bytes) {
-    void* ptr = malloc(bytes);
+    void* ptr = mem_alloc(bytes);
     if (!ptr) {
         errprint("Failed to allocate memory.");
         exit(EXIT_FAILURE);

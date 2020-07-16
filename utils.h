@@ -5,6 +5,7 @@
 #include <stdio.h>
 
 void errprint(const char* const err);
+void fatal(const char* const err);
 void* malloc_check(size_t bytes);
 int read_binary_file(const char *filename, char* *const o_dest, size_t *o_size);
 

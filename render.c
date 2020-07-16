@@ -3,21 +3,16 @@
 #include <stdbool.h>
 #include <string.h>
 #include <limits.h>
-#include <assert.h>
 
-#include "platform.h"
 #include "utils.h"
 #include "alloc.h"
 
-#define GLFW_INCLUDE_VULKAN
-#include <GLFW/glfw3.h>
+#include "render.h"
 
 #include <cglm/cglm.h>
 
-#define APP_NAME "DarkCraft"
+#define APP_NAME "Demo"
 #define ENGINE_NAME "None"
-
-#define CRAFT_BLOCK_SIZE 1.0f
 
 typedef struct Uniform {
     mat4 view_proj;
@@ -27,7 +22,6 @@ typedef struct PushConstants {
     mat4 model;
 } PushConstants;
 
-static GLFWwindow* create_window();
 static VkInstance create_instance();
 static VkPhysicalDevice pick_physical_device(
         const VkInstance instance, const VkSurfaceKHR surface,
@@ -153,7 +147,6 @@ const char *const DEVICE_EXTENSIONS[DEVICE_EXTENSION_COUNT] = {
 #define FRAGMENT_SHADER_PATH "./shaders/frag.spv"
 
 typedef struct Render {
-    GLFWwindow* window;
     VkInstance instance;
     VkSurfaceKHR surface;
     VkPhysicalDevice physical_device;
@@ -206,17 +199,15 @@ typedef struct Render {
     size_t current_frame;
 } Render;
 
-static void render_draw_frame(Render* self);
-static void render_swapchain_dependent_init(Render* self);
-static void recreate_swapchain(Render* self);
+static void render_swapchain_dependent_init(Render* self, GLFWwindow* window);
+static void recreate_swapchain(Render* self, GLFWwindow* window);
 
-Render* render_init() {
+Render* render_init(GLFWwindow* window) {
     Render* self = (Render*) mem_alloc(sizeof(Render));
-    self->window = create_window();
     self->instance = create_instance();
 
     if (glfwCreateWindowSurface(
-            self->instance, self->window, NULL, &self->surface) !=
+            self->instance, window, NULL, &self->surface) !=
             VK_SUCCESS) {
         errprint("Failed to create surface.");
         exit(EXIT_FAILURE);
@@ -236,11 +227,11 @@ Render* render_init() {
 
     self->descriptor_set_layout = create_descriptor_set_layout(self->device);
 
-    render_swapchain_dependent_init(self);
+    render_swapchain_dependent_init(self, window);
     return self;
 }
 
-static void render_swapchain_dependent_init(Render* self)
+static void render_swapchain_dependent_init(Render* self, GLFWwindow* window)
 {
     self->swapchain = create_swapchain(
             self->physical_device,
@@ -248,7 +239,7 @@ static void render_swapchain_dependent_init(Render* self)
             self->surface,
             self->graphics_family,
             self->present_family,
-            self->window,
+            window,
             &self->swapchain_format,
             &self->swapchain_extent,
             &self->swapchain_image_count,
@@ -394,7 +385,7 @@ void render_upload_map_mesh(
 
 static void cleanup_swapchain(Render* self)
 {
-    free(self->descriptor_sets);
+    mem_free(self->descriptor_sets);
     vkDestroyDescriptorPool(self->device, self->descriptor_pool, NULL);
 
     for (size_t i=0; i < self->swapchain_image_count; i++) {
@@ -404,14 +395,14 @@ static void cleanup_swapchain(Render* self)
                 self->device, self->draw_finished_semaphores[i], NULL);
         vkDestroyFence(self->device, self->commands_executed_fences[i], NULL);
     }
-    free(self->image_available_semaphores);
-    free(self->draw_finished_semaphores);
-    free(self->commands_executed_fences);
+    mem_free(self->image_available_semaphores);
+    mem_free(self->draw_finished_semaphores);
+    mem_free(self->commands_executed_fences);
 
     for (size_t i=0; i < self->swapchain_image_count; i++) {
         vkDestroyFramebuffer(self->device, self->framebuffers[i], NULL);
     }
-    free(self->framebuffers);
+    mem_free(self->framebuffers);
     
     vkDestroyImageView(self->device, self->depth_image_view, NULL);
     vkDestroyImage(self->device, self->depth_image, NULL);
@@ -430,24 +421,25 @@ static void cleanup_swapchain(Render* self)
         vkDestroyImageView(self->device, self->swapchain_image_views[i], NULL);
     }
 
-    free(self->swapchain_image_views);
-    free(self->swapchain_images);
+    mem_free(self->swapchain_image_views);
+    mem_free(self->swapchain_images);
 
     for (size_t i=0; i < self->swapchain_image_count; i++) {
         vkDestroyBuffer(self->device, self->uniform_buffers[i], NULL);
         vkFreeMemory(self->device, self->uniform_buffers_memories[i], NULL);
     }
-    free(self->uniform_buffers);
-    free(self->uniform_buffers_memories);
+    mem_free(self->uniform_buffers);
+    mem_free(self->uniform_buffers_memories);
 
     vkDestroySwapchainKHR(self->device, self->swapchain, NULL);
 }
 
 void render_destroy(Render* self)
 {
+    vkDeviceWaitIdle(self->device);
     cleanup_swapchain(self);
 
-    free(self->command_buffers);
+    mem_free(self->command_buffers);
 
     vkDestroyDescriptorSetLayout(self->device, self->descriptor_set_layout, NULL);
 
@@ -465,22 +457,11 @@ void render_destroy(Render* self)
     vkDestroyDevice(self->device, NULL);
     vkDestroySurfaceKHR(self->instance, self->surface, NULL);
     vkDestroyInstance(self->instance, NULL);
-    glfwDestroyWindow(self->window);
-    glfwTerminate();
 
     mem_free(self);
 }
 
-void render_loop(Render* self)
-{
-    while (!glfwWindowShouldClose(self->window)) {
-        glfwPollEvents();
-        render_draw_frame(self);
-    }
-    vkDeviceWaitIdle(self->device);
-}
-
-static void render_draw_frame(Render* self) {
+void render_draw_frame(Render* self, GLFWwindow* window) {
     PushConstants push_constants = {
         .model = GLM_MAT4_IDENTITY_INIT,
     };
@@ -512,7 +493,7 @@ static void render_draw_frame(Render* self) {
                 &image_index);
 
     if (acquire_image_result == VK_ERROR_OUT_OF_DATE_KHR) {
-        recreate_swapchain(self);
+        recreate_swapchain(self, window);
         return;
     } else if (acquire_image_result != VK_SUCCESS &&
             acquire_image_result != VK_SUBOPTIMAL_KHR) {
@@ -552,32 +533,13 @@ static void render_draw_frame(Render* self) {
     VkResult present_result = vkQueuePresentKHR(self->present_queue, &present_info);
     if (present_result == VK_ERROR_OUT_OF_DATE_KHR ||
             present_result == VK_SUBOPTIMAL_KHR) {
-        recreate_swapchain(self);
+        recreate_swapchain(self, window);
     } else if (present_result != VK_SUCCESS) {
         errprint("Failed to present swapchain image.");
         exit(EXIT_FAILURE);
     }
 
     self->current_frame = (current_frame + 1) % self->swapchain_image_count;
-}
-
-static GLFWwindow* create_window()
-{
-    // TODO handle errors
-    glfwInit();
-    glfwWindowHint(GLFW_CLIENT_API, GLFW_NO_API);
-    glfwWindowHint(GLFW_RESIZABLE, GLFW_FALSE);
-
-    GLFWmonitor* monitor = glfwGetPrimaryMonitor();
-    const GLFWvidmode* mode = glfwGetVideoMode(monitor);
-     
-    glfwWindowHint(GLFW_RED_BITS, mode->redBits);
-    glfwWindowHint(GLFW_GREEN_BITS, mode->greenBits);
-    glfwWindowHint(GLFW_BLUE_BITS, mode->blueBits);
-    glfwWindowHint(GLFW_REFRESH_RATE, mode->refreshRate);
-     
-    return glfwCreateWindow(
-            mode->width, mode->height, APP_NAME, monitor, NULL);
 }
 
 static VkInstance create_instance()
@@ -668,7 +630,7 @@ static VkPhysicalDevice pick_physical_device(
         if (present == -1)
             continue;
 
-        free(queue_families);
+        mem_free(queue_families);
 
         // Check if neccessary extensions are supported
         uint32_t ext_count;
@@ -693,7 +655,7 @@ static VkPhysicalDevice pick_physical_device(
                 break;
             }
         }    
-        free(available_extensions);
+        mem_free(available_extensions);
 
         if (!extensions_supported)
             continue;
@@ -721,7 +683,7 @@ static VkPhysicalDevice pick_physical_device(
         break;
     }
 
-    free(devices); 
+    mem_free(devices); 
     if (result == VK_NULL_HANDLE) {
         errprint("Failed to find a suitable physical device.");
         exit(EXIT_FAILURE);
@@ -793,7 +755,7 @@ static VkDevice create_logical_device(
     vkGetDeviceQueue(
         device, present_family, 0, o_present_queue);
 
-    free(queue_create_infos);
+    mem_free(queue_create_infos);
 
     return device;
 }
@@ -836,7 +798,7 @@ static VkSwapchainKHR create_swapchain(const VkPhysicalDevice physical_device,
     format = *formats;
 
 format_chosen:
-    free(formats);
+    mem_free(formats);
 
     // Choose present mode
     uint32_t present_mode_count;
@@ -859,7 +821,7 @@ format_chosen:
         }
     }
 
-    free(present_modes);
+    mem_free(present_modes);
 
     // Choose swap extent
     VkSurfaceCapabilitiesKHR capabilities;
@@ -1344,8 +1306,8 @@ static VkPipeline create_graphics_pipeline(
 
     vkDestroyShaderModule(device, fragment_shader_module, NULL);
     vkDestroyShaderModule(device, vertex_shader_module, NULL);
-    free(vertex_shader_code);
-    free(fragment_shader_code);
+    mem_free(vertex_shader_code);
+    mem_free(fragment_shader_code);
 
     *o_layout = pipeline_layout;
     return graphics_pipeline;
@@ -1708,7 +1670,7 @@ static VkDescriptorPool create_descriptor_pool(
         exit(EXIT_FAILURE);
     }
 
-    free(pool_sizes);
+    mem_free(pool_sizes);
 
     return descriptor_pool;
 }
@@ -1950,7 +1912,7 @@ static VkDescriptorSet* create_descriptor_sets(
         exit(EXIT_FAILURE);
     }
 
-    free(layout_copies);
+    mem_free(layout_copies);
 
     for (size_t i = 0; i < swapchain_image_count; i++) {
         VkDescriptorBufferInfo buffer_info = {
@@ -2071,12 +2033,12 @@ static VkCommandBuffer* record_command_buffers(
     return command_buffers;
 }
 
-static void recreate_swapchain(Render* self)
+static void recreate_swapchain(Render* self, GLFWwindow* window)
 {
     int width = 0, height = 0;
     while (width == 0 || height == 0)
     {
-        glfwGetFramebufferSize(self->window, &width, &height);
+        glfwGetFramebufferSize(window, &width, &height);
         glfwWaitEvents();
     }
 
@@ -2084,42 +2046,6 @@ static void recreate_swapchain(Render* self)
 
     cleanup_swapchain(self);
 
-    render_swapchain_dependent_init(self);
+    render_swapchain_dependent_init(self, window);
 }
 
-void render_test()
-{
-    Render* render = render_init();
-
-    Vertex vertices[3] = {
-        {
-            .position = {2.0, 1.0, 20.0},
-            .color = {1.0, 1.0, 1.0},
-        },
-        {
-            .position = {1.0, 1.0, 20.0},
-            .color = {1.0, 1.0, 1.0},
-        },
-        {
-            .position = {3.0, 3.0, 20.0},
-            .color = {1.0, 1.0, 1.0},
-        },
-    };
-    uint16_t indices[3] = {
-        0, 1, 2
-    };
-    render_upload_map_mesh(render, vertices, 3, indices, 3);
-
-    render_loop(render);
-    render_destroy(render);
-}
-
-int main()
-{
-    mem_init(MBS(512));
-
-    render_test();
-
-    printf("%s", "Success!\n");
-    return EXIT_SUCCESS;
-}
