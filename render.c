@@ -84,7 +84,7 @@ static VkBuffer device_local_buffer_from_data(
         VkCommandPool command_pool,
         VkDeviceMemory *o_memory
 );
-void create_sync_objects(
+static void create_sync_objects(
         VkDevice device,
         uint32_t swapchain_image_count,
         VkFence* *const commands_executed,

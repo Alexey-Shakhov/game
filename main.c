@@ -70,11 +70,11 @@ int main()
 {
     mem_init(MBS(24));
 
-    mem_inspect();
 
     GLFWwindow* window = create_window(&window);
 
     render_test(window);
+    mem_check();
 
     destroy_window(window);
     

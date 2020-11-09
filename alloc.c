@@ -121,7 +121,7 @@ void mem_shutdown()
 
 #ifndef RELEASE
 // Proudly stolen from DOOM source code
-void mem_inspect()
+void mem_check()
 {
     Memblock* block;
 
@@ -129,13 +129,13 @@ void mem_inspect()
         if (block->next == &allocator.link) break;
 
         if ((uint8_t*) block + block->size != (uint8_t*) block->next)
-            fatal("Memory inspect: block size does not touch the next block.\n");
+            fatal("MEMCHECK: block size does not touch the next block.\n");
 
         if (block->next->prev != block)
-            fatal("Memory inspect: next block doesn't have proper back link.\n");
+            fatal("MEMCHECK: next block doesn't have proper back link.\n");
 
         if (!block->used && !block->next->used)
-            fatal("Memory inspect: two consecutive free blocks.\n");
+            fatal("MEMCHECK: two consecutive free blocks.\n");
     }
 }
 #endif
