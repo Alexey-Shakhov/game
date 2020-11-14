@@ -15,8 +15,7 @@ void fatal(const char* const err) {
 void* malloc_check(size_t bytes) {
     void* ptr = mem_alloc(bytes);
     if (!ptr) {
-        errprint("Failed to allocate memory.");
-        exit(EXIT_FAILURE);
+        fatal("Failed to allocate memory.");
     }
     return ptr;
 }

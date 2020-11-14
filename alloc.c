@@ -1,5 +1,4 @@
 #include <stdlib.h>
-#include <stdbool.h>
 #include <inttypes.h>
 #include "alloc.h"
 #include "utils.h"
