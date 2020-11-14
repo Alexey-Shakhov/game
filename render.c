@@ -3,13 +3,15 @@
 #include <stdbool.h>
 #include <string.h>
 #include <limits.h>
+#include <assert.h>
+#define GLFW_INCLUDE_VULKAN
+#include <GLFW/glfw3.h>
+#include <cglm/cglm.h>
 
 #include "utils.h"
 #include "alloc.h"
 
 #include "render.h"
-
-#include <cglm/cglm.h>
 
 #define APP_NAME "Demo"
 #define ENGINE_NAME "None"
@@ -147,6 +149,7 @@ const char *const DEVICE_EXTENSIONS[DEVICE_EXTENSION_COUNT] = {
 #define FRAGMENT_SHADER_PATH "./shaders/frag.spv"
 
 typedef struct Render {
+    GLFWwindow* window;
     VkInstance instance;
     VkSurfaceKHR surface;
     VkPhysicalDevice physical_device;
@@ -202,8 +205,25 @@ typedef struct Render {
 static void render_swapchain_dependent_init(Render* self, GLFWwindow* window);
 static void recreate_swapchain(Render* self, GLFWwindow* window);
 
-Render* render_init(GLFWwindow* window) {
+Render* render_init() {
+    // TODO handle errors
+    glfwInit();
+    glfwWindowHint(GLFW_CLIENT_API, GLFW_NO_API);
+    glfwWindowHint(GLFW_RESIZABLE, GLFW_FALSE);
+
+    GLFWmonitor* monitor = glfwGetPrimaryMonitor();
+    const GLFWvidmode* mode = glfwGetVideoMode(monitor);
+     
+    glfwWindowHint(GLFW_RED_BITS, mode->redBits);
+    glfwWindowHint(GLFW_GREEN_BITS, mode->greenBits);
+    glfwWindowHint(GLFW_BLUE_BITS, mode->blueBits);
+    glfwWindowHint(GLFW_REFRESH_RATE, mode->refreshRate);
+     
+    GLFWwindow* window = glfwCreateWindow(
+            mode->width, mode->height, "Demo", monitor, NULL);
+
     Render* self = (Render*) mem_alloc(sizeof(Render));
+    self->window = window;
     self->instance = create_instance();
 
     if (glfwCreateWindowSurface(
@@ -457,6 +477,9 @@ void render_destroy(Render* self)
     vkDestroyDevice(self->device, NULL);
     vkDestroySurfaceKHR(self->instance, self->surface, NULL);
     vkDestroyInstance(self->instance, NULL);
+
+    glfwDestroyWindow(self->window);
+    glfwTerminate();
 
     mem_free(self);
 }
@@ -2049,3 +2072,46 @@ static void recreate_swapchain(Render* self, GLFWwindow* window)
     render_swapchain_dependent_init(self, window);
 }
 
+void render_test()
+{
+    Render* render = render_init();
+
+    Vertex vertices[3] = {
+        {
+            .position = {2.0, 1.0, 20.0},
+            .color = {1.0, 1.0, 1.0},
+        },
+        {
+            .position = {1.0, 1.0, 20.0},
+            .color = {1.0, 1.0, 1.0},
+        },
+        {
+            .position = {3.0, 3.0, 20.0},
+            .color = {1.0, 1.0, 1.0},
+        },
+    };
+    uint16_t indices[3] = {
+        0, 1, 2
+    };
+    render_upload_map_mesh(render, vertices, 3, indices, 3);
+
+    while (!glfwWindowShouldClose(render->window)) {
+        glfwPollEvents();
+        render_draw_frame(render, render->window);
+    }
+
+    render_destroy(render);
+}
+
+int main()
+{
+    mem_init(MBS(24));
+
+    render_test();
+    mem_check();
+    
+    mem_shutdown();
+
+    printf("%s", "Success!\n");
+    return EXIT_SUCCESS;
+}

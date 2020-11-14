@@ -7,7 +7,7 @@
 #include <cglm/cglm.h>
 
 typedef struct Render Render;
-Render* render_init(GLFWwindow* window);
+Render* render_init();
 void render_draw_frame(Render* self, GLFWwindow* window);
 void render_destroy(Render* self);
 
