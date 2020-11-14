@@ -4,137 +4,129 @@
 #include "alloc.h"
 #include "utils.h"
 
-#define ALIGNMENT 16
-#define BLOCK_HEADER_SIZE 32 /* Minimum size that can contain Memblock
-                                and divides by alignment */
-#define MIN_BLOCK_SIZE 64 // DOOM value
-
-#define USEDID 0xdeadbeef
+#define MINFRAGMENT 64
+#define ZONEID 0xdeadbeef
 
 typedef struct Memblock Memblock;
 typedef struct Memblock {
-    size_t size; // Including the header
+    uint64_t size; // Including the struct
     Memblock* prev;
     Memblock* next;
-    uint32_t usedid; // Must be equal to USEDID if used
-    bool used;
+    uint32_t id;
+    uint32_t tag; // 0 - free, else: used
 } Memblock;
 
-struct Allocator {
-    uint8_t* ptr;
-    size_t size;
+typedef struct Memzone {
+    uint64_t size; // Including the struct
     Memblock link;
-} allocator;
+    Memblock* rover;
+} Memzone;
 
-void mem_clear()
+void zone_init(Memzone* zone, size_t size)
 {
     Memblock* block;
-    allocator.link.next = allocator.link.prev =
-            block = (Memblock*) allocator.ptr;
+    zone->link.next = zone->link.prev =
+            block = (Memblock*)((char*) zone + sizeof(Memzone));
+    zone->link.id = 0;
+    zone->link.size = 0;
+    zone->link.tag = 1;
+    zone->rover = block;
+    zone->size = size;
 
-    block->prev = block->next = &allocator.link;
-    block->used = false;
-    block->size = allocator.size;
+    block->prev = block->next = &zone->link;
+    block->id = ZONEID;
+    block->tag = 0;
+    block->size = size - sizeof(Memzone);
 }
+
+static Memzone* mainzone;
 
 void mem_init(size_t size)
 {
-    allocator.ptr = malloc(size);
-    allocator.size = size;
-    DBASSERT((size_t) allocator.ptr % ALIGNMENT == 0);
-    if (!allocator.ptr) {
-        errprint("Failed to allocate game memory.");
-        exit(EXIT_FAILURE);
-    }
-
-    allocator.link.used = true;
-
-    mem_clear();
+    mainzone = (Memzone*) malloc(size);
+    if (!mainzone) fatal("Failed to allocate game memory.");
+    zone_init(mainzone, size);
 }
 
-void* mem_alloc(size_t bytes)
+void* mem_alloc(size_t size)
 {
-    bytes = bytes + (ALIGNMENT - bytes & (ALIGNMENT - 1));
-    bytes += BLOCK_HEADER_SIZE;
+    size += sizeof(Memblock);
+    size = (size + 7) & ~7;
 
-    // TODO make faster with the rover
-    Memblock* block = allocator.link.next;
-    while (true) {
-        if (block == &allocator.link) return NULL;
-        if (block->size >= bytes && !block->used) break;
+    Memblock* block = mainzone->rover;
+    Memblock* start = block->prev;
+    while (block->tag || block->size < size) {
+        if (block == start) return NULL;
         block = block->next;
     }
+    mainzone->rover = block->next;
 
-    int extra = block->size - bytes;
-
-    if (extra >= MIN_BLOCK_SIZE) {
-        Memblock* new_block = (Memblock*) ((uint8_t*) block + bytes);
+    uint64_t extra = block->size - size;
+    if (extra >= MINFRAGMENT) {
+        Memblock* new_block = (Memblock*) ((uint8_t*) block + size);
         new_block->size = extra;
-        new_block->used = false;
+        new_block->tag = 0;
         new_block->prev = block;
+        new_block->id = ZONEID;
         new_block->next = block->next;
         new_block->next->prev = new_block;
 
         block->next = new_block;
-        block->size = bytes;
+        block->size = size;
     }
     
-    block->used = true;
-    block->usedid = USEDID;
-    return (void*) ((uint8_t*) block + BLOCK_HEADER_SIZE);
+    block->tag = 1;
+    block->id = ZONEID;
+    return (void*) ((char*) block + sizeof(Memblock));
 }
 
 void mem_free(void* ptr)
 {
-    Memblock* block = (Memblock*) ((uint8_t*) ptr - BLOCK_HEADER_SIZE);
-    if (block->usedid != USEDID) {
-        //TODO proper shutdown
-        errprint("Double free or memory corruption.");
-        exit(EXIT_FAILURE);
-    }
+    if (!ptr) fatal("Trying to free a NULL pointer.");
 
-    block->used = false;
-    block->usedid = 0;
+    Memblock* block = (Memblock*) ((char*) ptr - sizeof(Memblock));
+    if (block->id != ZONEID) fatal("Trying to free a pointer without ZONEID.");
+    if (block->tag == 0) fatal("Trying to free a free pointer.");
+
+    block->tag = 0;
 
     Memblock* other = block->prev;
-
-    if (!other->used) {
+    if (!other->tag) {
         other->size += block->size;
         other->next = block->next;
         other->next->prev = other;
-
+        if (block == mainzone->rover) mainzone->rover = other;
         block = other;
     }
 
     other = block->next;
-    if (!other->used) {
+    if (!other->tag) {
         block->size += other->size;
         block->next = other->next;
         block->next->prev = block;
+        if (other == mainzone->rover) mainzone->rover = block;
     }
 }
 
 void mem_shutdown()
 {
-    free(allocator.ptr);
+    free(mainzone);
 }
 
 #ifndef RELEASE
 // Proudly stolen from DOOM source code
 void mem_check()
 {
-    Memblock* block;
+    for (Memblock* block = mainzone->link.next; ; block = block->next) {
+        if (block->next == &mainzone->link) break;
 
-    for (block = allocator.link.next; ; block = block->next) {
-        if (block->next == &allocator.link) break;
-
-        if ((uint8_t*) block + block->size != (uint8_t*) block->next)
+        if ((char*) block + block->size != (char*) block->next)
             fatal("MEMCHECK: block size does not touch the next block.\n");
 
         if (block->next->prev != block)
             fatal("MEMCHECK: next block doesn't have proper back link.\n");
 
-        if (!block->used && !block->next->used)
+        if (!block->tag && !block->next->tag)
             fatal("MEMCHECK: two consecutive free blocks.\n");
     }
 }
