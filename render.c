@@ -72,6 +72,12 @@ static int find_memory_type(
         VkMemoryRequirements memory_requirements,
         VkMemoryPropertyFlags required_properties
 );
+static int create_buffer(
+        VkPhysicalDevice physical_device,
+        VkDevice device,
+        size_t size, VkBufferUsageFlags usage,
+        VkMemoryPropertyFlags properties, VkBuffer *buffer,
+        VkDeviceMemory *bufferMemory);
 static VkBuffer device_local_buffer_from_data(
         void* data,
         size_t size,
@@ -81,11 +87,6 @@ static VkBuffer device_local_buffer_from_data(
         VkQueue queue,
         VkCommandPool command_pool,
         VkDeviceMemory *o_memory
-);
-VkBuffer* create_uniform_buffers(
-        VkPhysicalDevice physical_device,
-        VkDevice device,
-        VkDeviceMemory* *const o_memories
 );
 static VkDescriptorSet* create_descriptor_sets(
         VkDevice device,
@@ -379,22 +380,87 @@ static void render_swapchain_dependent_init(Render* self, GLFWwindow* window)
             self->swapchain_extent
     );
 
-    VkDescriptorType descriptor_types[1] = {VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER};
-    self->descriptor_pool = create_descriptor_pool(
-            self->device, descriptor_types, 1
-    );
-    
-    self->uniform_buffers = create_uniform_buffers(
-            self->physical_device,
-            self->device,
-            &self->uniform_buffers_memories
-    );
-    self->descriptor_sets = create_descriptor_sets(
-            self->device,
-            self->descriptor_pool,
-            self->descriptor_set_layout,
-            self->uniform_buffers
-    );
+    // Create descriptor pool
+    enum { descriptor_type_count = 1 };
+    VkDescriptorType descriptor_types[descriptor_type_count] =
+        {VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER};
+    VkDescriptorPoolSize* pool_sizes = malloc_nofail(
+            sizeof(VkDescriptorPoolSize) * descriptor_type_count);
+    for (size_t i=0; i < descriptor_type_count; i++) {
+        pool_sizes[i].type = descriptor_types[i];
+        pool_sizes[i].descriptorCount = 2;
+    }
+    VkDescriptorPoolCreateInfo pool_info = {
+        .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO,
+        .poolSizeCount = descriptor_type_count,
+        .pPoolSizes = pool_sizes,
+        .maxSets = 2,
+    };
+    if (vkCreateDescriptorPool(self->device, &pool_info, NULL, &self->descriptor_pool)
+            != VK_SUCCESS) {
+        fatal("Failed to create descriptor pool.");
+    }
+    mem_free(pool_sizes);
+
+    // Create uniform buffers
+    self->uniform_buffers = malloc_nofail(sizeof(VkBuffer) * 2);
+    self->uniform_buffers_memories = malloc_nofail(sizeof(VkDeviceMemory) * 2);
+    for (uint32_t i=0; i < 2; i++) {
+        create_buffer(
+                self->physical_device,
+                self->device,
+                sizeof(Uniform),
+                VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT |
+                        VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+                VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
+                &self->uniform_buffers[i],
+                &self->uniform_buffers_memories[i]
+        );
+    }
+
+    // Create descriptor sets
+    VkDescriptorSetLayout* layout_copies = malloc_nofail(
+            sizeof(VkDescriptorSetLayout) * 2);
+    for (size_t i=0; i < 2; i++) {
+        layout_copies[i] = self->descriptor_set_layout;
+    }
+    VkDescriptorSetAllocateInfo allocate_info = {
+        .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO,
+        .descriptorPool = self->descriptor_pool,
+        .descriptorSetCount = 2,
+        .pSetLayouts = layout_copies,
+    };
+    self->descriptor_sets = malloc_nofail(
+            sizeof(VkDescriptorSet) * 2);
+    if (vkAllocateDescriptorSets(self->device, &allocate_info, self->descriptor_sets)
+            != VK_SUCCESS) fatal("Failed to allocate descriptor sets.");
+    mem_free(layout_copies);
+
+    for (size_t i = 0; i < 2; i++) {
+        VkDescriptorBufferInfo buffer_info = {
+            .buffer = self->uniform_buffers[i],
+            .offset = 0,
+            .range = sizeof(Uniform),
+        };
+
+        // TODO replace with a loop that iterates over descriptor types?
+        VkWriteDescriptorSet uniform_write = {
+            .sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+            .dstSet = self->descriptor_sets[i],
+            .dstBinding = 0,
+            .dstArrayElement = 0,
+            .descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
+            .descriptorCount = 1,
+            .pBufferInfo = &buffer_info,
+        };
+
+        vkUpdateDescriptorSets(
+                self->device,
+                1,
+                &uniform_write,
+                0,
+                NULL);
+    }
 
     // Upload projection matrices
     Uniform uniform;
@@ -1578,36 +1644,6 @@ static VkFramebuffer* create_framebuffers(
     return framebuffers;
 }
 
-static VkDescriptorPool create_descriptor_pool(
-        VkDevice device, VkDescriptorType* descriptor_types,
-        size_t descriptor_type_count
-) {
-    VkDescriptorPoolSize* pool_sizes = malloc_nofail(
-            sizeof(VkDescriptorPoolSize) * descriptor_type_count);
-
-    for (size_t i=0; i < descriptor_type_count; i++) {
-        pool_sizes[i].type = descriptor_types[i];
-        pool_sizes[i].descriptorCount = 2;
-    }
-
-    VkDescriptorPoolCreateInfo pool_info = {
-        .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO,
-        .poolSizeCount = descriptor_type_count,
-        .pPoolSizes = pool_sizes,
-        .maxSets = 2,
-    };
-
-    VkDescriptorPool descriptor_pool;
-    if (vkCreateDescriptorPool(device, &pool_info, NULL, &descriptor_pool)
-            != VK_SUCCESS) {
-        fatal("Failed to create descriptor pool.");
-    }
-
-    mem_free(pool_sizes);
-
-    return descriptor_pool;
-}
-
 static int find_memory_type(
         VkPhysicalDevice physical_device,
         VkMemoryRequirements memory_requirements,
@@ -1760,89 +1796,6 @@ static VkBuffer device_local_buffer_from_data(
 
     *o_memory = device_local_buffer_memory;
     return device_local_buffer;
-}
-
-VkBuffer* create_uniform_buffers(
-        VkPhysicalDevice physical_device,
-        VkDevice device,
-        VkDeviceMemory* *const o_memories
-) {
-    VkBuffer* uniform_buffers = malloc_nofail(
-                                sizeof(VkBuffer) * 2);
-    VkDeviceMemory* memories = malloc_nofail(
-            sizeof(VkDeviceMemory) * 2);
-    for (uint32_t i=0; i < 2; i++) {
-        create_buffer(
-                physical_device,
-                device,
-                sizeof(Uniform),
-                VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT |
-                        VK_BUFFER_USAGE_TRANSFER_DST_BIT,
-                VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
-                &uniform_buffers[i],
-                &memories[i]
-        );
-    }
-
-    *o_memories = memories;
-    return uniform_buffers;
-}
-
-static VkDescriptorSet* create_descriptor_sets(
-        VkDevice device,
-        VkDescriptorPool descriptor_pool,
-        VkDescriptorSetLayout descriptor_set_layout,
-        VkBuffer* uniform_buffers
-) {
-    VkDescriptorSetLayout* layout_copies = malloc_nofail(
-            sizeof(VkDescriptorSetLayout) * 2);
-    for (size_t i=0; i < 2; i++) {
-        layout_copies[i] = descriptor_set_layout;
-    }
-
-    VkDescriptorSetAllocateInfo allocate_info = {
-        .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO,
-        .descriptorPool = descriptor_pool,
-        .descriptorSetCount = 2,
-        .pSetLayouts = layout_copies,
-    };
-
-    VkDescriptorSet* descriptor_sets = malloc_nofail(
-            sizeof(VkDescriptorSet) * 2);
-    if (vkAllocateDescriptorSets(device, &allocate_info, descriptor_sets)
-            != VK_SUCCESS) {
-        fatal("Failed to allocate descriptor sets.");
-    }
-
-    mem_free(layout_copies);
-
-    for (size_t i = 0; i < 2; i++) {
-        VkDescriptorBufferInfo buffer_info = {
-            .buffer = uniform_buffers[i],
-            .offset = 0,
-            .range = sizeof(Uniform),
-        };
-
-        // TODO replace with a loop that iterates over descriptor types?
-        VkWriteDescriptorSet uniform_write = {
-            .sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
-            .dstSet = descriptor_sets[i],
-            .dstBinding = 0,
-            .dstArrayElement = 0,
-            .descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
-            .descriptorCount = 1,
-            .pBufferInfo = &buffer_info,
-        };
-
-        vkUpdateDescriptorSets(
-                device,
-                1,
-                &uniform_write,
-                0,
-                NULL);
-    }
-
-    return descriptor_sets;
 }
 
 static VkCommandBuffer* record_command_buffers(
