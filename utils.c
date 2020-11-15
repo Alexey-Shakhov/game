@@ -12,7 +12,7 @@ void fatal(const char* const err) {
     exit(EXIT_FAILURE);
 }
 
-void* malloc_check(size_t bytes) {
+void* malloc_nofail(size_t bytes) {
     void* ptr = mem_alloc(bytes);
     if (!ptr) {
         fatal("Failed to allocate memory.");
@@ -30,7 +30,7 @@ int read_binary_file(const char *filename, char* *const o_dest, size_t *o_size)
     *o_size = ftell(file);
     rewind(file);
     
-    *o_dest = malloc_check(*o_size);
+    *o_dest = malloc_nofail(*o_size);
     fread(*o_dest, *o_size, 1, file);
 
     fclose(file);

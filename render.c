@@ -3,7 +3,6 @@
 #include <stdbool.h>
 #include <string.h>
 #include <limits.h>
-#include <assert.h>
 #define GLFW_INCLUDE_VULKAN
 #include <GLFW/glfw3.h>
 #include <cglm/cglm.h>
@@ -37,10 +36,10 @@ static VkSwapchainKHR create_swapchain(const VkPhysicalDevice physical_device,
         const VkSurfaceKHR surface, uint32_t graphics_family,
         uint32_t present_family, GLFWwindow* const window,
         VkFormat* const o_swapchain_format,
-        VkExtent2D* const o_swapchain_extent, uint32_t *const o_image_count,
+        VkExtent2D* const o_swapchain_extent,
         VkImage* *const o_images);
 static VkImageView* create_swapchain_image_views(VkDevice device, VkFormat format,
-        VkImage* images, uint32_t image_count);
+        VkImage* images);
 static VkRenderPass create_render_pass(VkFormat swapchain_format,
         VkPhysicalDevice physical_device, VkDevice device);
 static VkDescriptorSetLayout create_descriptor_set_layout(VkDevice device);
@@ -63,13 +62,13 @@ static VkImage create_depth_image(
         VkCommandPool command_pool, VkQueue queue, VkImageView* o_view,
         VkDeviceMemory* o_memory);
 static VkFramebuffer* create_framebuffers(
-        VkDevice device, uint32_t swapchain_image_count,
+        VkDevice device,
         VkImageView color_image_view, VkImageView depth_image_view,
         VkImageView* swapchain_image_views, VkRenderPass render_pass,
         VkExtent2D swapchain_extent);
 static VkDescriptorPool create_descriptor_pool(
         VkDevice device, VkDescriptorType* descriptor_types,
-        size_t descriptor_type_count, uint32_t swapchain_image_count
+        size_t descriptor_type_count
 );
 static int find_memory_type(
         VkPhysicalDevice physical_device,
@@ -86,24 +85,15 @@ static VkBuffer device_local_buffer_from_data(
         VkCommandPool command_pool,
         VkDeviceMemory *o_memory
 );
-static void create_sync_objects(
-        VkDevice device,
-        uint32_t swapchain_image_count,
-        VkFence* *const commands_executed,
-        VkSemaphore* *const image_available,
-        VkSemaphore* *const draw_finished
-);
 VkBuffer* create_uniform_buffers(
         VkPhysicalDevice physical_device,
         VkDevice device,
-        uint32_t swapchain_image_count,
         VkDeviceMemory* *const o_memories
 );
 static VkDescriptorSet* create_descriptor_sets(
         VkDevice device,
         VkDescriptorPool descriptor_pool,
         VkDescriptorSetLayout descriptor_set_layout,
-        uint32_t swapchain_image_count,
         VkBuffer* uniform_buffers
 );
 static void upload_to_device_local_buffer(
@@ -118,7 +108,6 @@ static void upload_to_device_local_buffer(
 static VkCommandBuffer* record_command_buffers(
         VkDevice device,
         VkCommandPool command_pool,
-        uint32_t swapchain_image_count,
         VkRenderPass render_pass,
         VkFramebuffer* swapchain_framebuffers,
         VkExtent2D swapchain_extent,
@@ -161,7 +150,6 @@ typedef struct Render {
     VkSwapchainKHR swapchain;
     VkFormat swapchain_format;
     VkExtent2D swapchain_extent;
-    uint32_t swapchain_image_count;
     VkImage* swapchain_images;
     VkImageView* swapchain_image_views;
     VkRenderPass render_pass;
@@ -188,16 +176,16 @@ typedef struct Render {
     VkBuffer index_buffer;
     VkDeviceMemory index_buffer_memory;
 
-    VkSemaphore* draw_finished_semaphores;
-    VkSemaphore* image_available_semaphores;
-    VkFence* commands_executed_fences;
-
     VkBuffer* uniform_buffers;
     VkDeviceMemory* uniform_buffers_memories;
 
     VkDescriptorSet* descriptor_sets;
 
     VkCommandBuffer* command_buffers;
+
+    VkFence commands_executed_fences[2];
+    VkSemaphore image_available_semaphores[2];
+    VkSemaphore draw_finished_semaphores[2];
 
     size_t current_frame;
 } Render;
@@ -222,15 +210,13 @@ Render* render_init() {
     GLFWwindow* window = glfwCreateWindow(
             mode->width, mode->height, "Demo", monitor, NULL);
 
-    Render* self = (Render*) mem_alloc(sizeof(Render));
+    Render* self = (Render*) malloc_nofail(sizeof(Render));
     self->window = window;
     self->instance = create_instance();
 
     if (glfwCreateWindowSurface(
-            self->instance, window, NULL, &self->surface) !=
-            VK_SUCCESS) {
-        errprint("Failed to create surface.");
-        exit(EXIT_FAILURE);
+            self->instance, window, NULL, &self->surface) != VK_SUCCESS) {
+        fatal("Failed to create surface.");
     }
 
     self->physical_device = pick_physical_device(
@@ -247,6 +233,22 @@ Render* render_init() {
 
     self->descriptor_set_layout = create_descriptor_set_layout(self->device);
 
+    VkSemaphoreCreateInfo semaphore_info = {
+        .sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO,
+    };
+    VkFenceCreateInfo fence_info = {
+        .sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO,
+        .flags = VK_FENCE_CREATE_SIGNALED_BIT,
+    };
+    for (size_t i = 0; i < 2; i++) {
+        vkCreateSemaphore(self->device, &semaphore_info, NULL,
+                &self->image_available_semaphores[i]);
+        vkCreateSemaphore(self->device, &semaphore_info, NULL,
+                &self->draw_finished_semaphores[i]);
+        vkCreateFence(self->device, &fence_info, NULL,
+                &self->commands_executed_fences[i]);
+    }
+
     render_swapchain_dependent_init(self, window);
     return self;
 }
@@ -262,14 +264,12 @@ static void render_swapchain_dependent_init(Render* self, GLFWwindow* window)
             window,
             &self->swapchain_format,
             &self->swapchain_extent,
-            &self->swapchain_image_count,
             &self->swapchain_images
     );
     self->swapchain_image_views = create_swapchain_image_views(
             self->device,
             self->swapchain_format,
-            self->swapchain_images,
-            self->swapchain_image_count
+            self->swapchain_images
     );
     self->render_pass = create_render_pass(
             self->swapchain_format,
@@ -307,40 +307,27 @@ static void render_swapchain_dependent_init(Render* self, GLFWwindow* window)
     );
     self->framebuffers = create_framebuffers(
             self->device,
-            self->swapchain_image_count,
             self->color_image_view,
             self->depth_image_view,
             self->swapchain_image_views,
             self->render_pass,
             self->swapchain_extent
     );
-    create_sync_objects(
-            self->device,
-            self->swapchain_image_count,
-            &self->commands_executed_fences,
-            &self->image_available_semaphores,
-            &self->draw_finished_semaphores
-    );
 
     VkDescriptorType descriptor_types[1] = { VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER };
     self->descriptor_pool = create_descriptor_pool(
-            self->device,
-            descriptor_types,
-            1,
-            self->swapchain_image_count
+            self->device, descriptor_types, 1
     );
     
     self->uniform_buffers = create_uniform_buffers(
             self->physical_device,
             self->device,
-            self->swapchain_image_count,
             &self->uniform_buffers_memories
     );
     self->descriptor_sets = create_descriptor_sets(
             self->device,
             self->descriptor_pool,
             self->descriptor_set_layout,
-            self->swapchain_image_count,
             self->uniform_buffers
     );
 
@@ -362,7 +349,7 @@ static void render_swapchain_dependent_init(Render* self, GLFWwindow* window)
 
     glm_mat4_mul(proj, view, uniform.view_proj);
 
-    for (size_t i=0; i < self->swapchain_image_count; i++) {
+    for (size_t i=0; i < 2; i++) {
         upload_to_device_local_buffer(
                 (void*) &uniform,
                 sizeof(uniform),
@@ -408,18 +395,15 @@ static void cleanup_swapchain(Render* self)
     mem_free(self->descriptor_sets);
     vkDestroyDescriptorPool(self->device, self->descriptor_pool, NULL);
 
-    for (size_t i=0; i < self->swapchain_image_count; i++) {
+    for (size_t i=0; i < 2; i++) {
         vkDestroySemaphore(
                 self->device, self->image_available_semaphores[i], NULL);
         vkDestroySemaphore(
                 self->device, self->draw_finished_semaphores[i], NULL);
         vkDestroyFence(self->device, self->commands_executed_fences[i], NULL);
     }
-    mem_free(self->image_available_semaphores);
-    mem_free(self->draw_finished_semaphores);
-    mem_free(self->commands_executed_fences);
 
-    for (size_t i=0; i < self->swapchain_image_count; i++) {
+    for (size_t i=0; i < 2; i++) {
         vkDestroyFramebuffer(self->device, self->framebuffers[i], NULL);
     }
     mem_free(self->framebuffers);
@@ -437,14 +421,14 @@ static void cleanup_swapchain(Render* self)
 
     vkDestroyRenderPass(self->device, self->render_pass, NULL);
 
-    for (uint32_t i=0; i < self->swapchain_image_count; i++) {
+    for (uint32_t i=0; i < 2; i++) {
         vkDestroyImageView(self->device, self->swapchain_image_views[i], NULL);
     }
 
     mem_free(self->swapchain_image_views);
     mem_free(self->swapchain_images);
 
-    for (size_t i=0; i < self->swapchain_image_count; i++) {
+    for (size_t i=0; i < 2; i++) {
         vkDestroyBuffer(self->device, self->uniform_buffers[i], NULL);
         vkFreeMemory(self->device, self->uniform_buffers_memories[i], NULL);
     }
@@ -492,7 +476,6 @@ void render_draw_frame(Render* self, GLFWwindow* window) {
     self->command_buffers = record_command_buffers(
             self->device,
             self->graphics_command_pool,
-            self->swapchain_image_count,
             self->render_pass,
             self->framebuffers,
             self->swapchain_extent,
@@ -520,8 +503,7 @@ void render_draw_frame(Render* self, GLFWwindow* window) {
         return;
     } else if (acquire_image_result != VK_SUCCESS &&
             acquire_image_result != VK_SUBOPTIMAL_KHR) {
-        errprint("Failed to acquire swapchain image.");
-        exit(EXIT_FAILURE);
+        fatal("Failed to acquire swapchain image.");
     }
 
     VkPipelineStageFlags wait_mask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
@@ -540,8 +522,7 @@ void render_draw_frame(Render* self, GLFWwindow* window) {
 
     if (vkQueueSubmit(self->graphics_queue, 1, &submit_info,
             self->commands_executed_fences[current_frame]) != VK_SUCCESS) {
-        errprint("Failed to submit draw command buffer.");
-        exit(EXIT_FAILURE);
+        fatal("Failed to submit draw command buffer.");
     }
 
     VkPresentInfoKHR present_info = {
@@ -558,11 +539,10 @@ void render_draw_frame(Render* self, GLFWwindow* window) {
             present_result == VK_SUBOPTIMAL_KHR) {
         recreate_swapchain(self, window);
     } else if (present_result != VK_SUCCESS) {
-        errprint("Failed to present swapchain image.");
-        exit(EXIT_FAILURE);
+        fatal("Failed to present swapchain image.");
     }
 
-    self->current_frame = (current_frame + 1) % self->swapchain_image_count;
+    self->current_frame = (current_frame + 1) % 2;
 }
 
 static VkInstance create_instance()
@@ -595,8 +575,7 @@ static VkInstance create_instance()
 
     VkInstance instance;
     if (vkCreateInstance(&create_info, NULL, &instance) != VK_SUCCESS) {
-        errprint("Failed to create instance");
-        exit(EXIT_FAILURE);
+        fatal("Failed to create instance");
     }
     return instance;
 }
@@ -607,36 +586,34 @@ static VkPhysicalDevice pick_physical_device(
 {
     uint32_t dev_count;
     if (vkEnumeratePhysicalDevices(instance, &dev_count, NULL) !=
-            VK_SUCCESS) {
-        errprint("Failed to enumerate physical devices.");
-    }
-    VkPhysicalDevice *devices = malloc_check(
+            VK_SUCCESS) fatal("Failed to enumerate physical devices.");
+    VkPhysicalDevice *devices = malloc_nofail(
                                         sizeof(VkPhysicalDevice) * dev_count);
     if (vkEnumeratePhysicalDevices(instance, &dev_count, devices) !=
-            VK_SUCCESS) {
-        errprint("Failed to enumerate physical devices.");
-    }
+            VK_SUCCESS) fatal("Failed to enumerate physical devices.");
 
     VkPhysicalDevice result = VK_NULL_HANDLE;
-
     int graphics;
     int present;
     for (size_t i=0; i < dev_count; i++) {
         VkPhysicalDevice device = devices[i];
 
         // Find graphics and present queue families
+        // TODO use a specialized transfer queue
         uint32_t queue_family_count;
         vkGetPhysicalDeviceQueueFamilyProperties(
                 device, &queue_family_count, NULL);
         VkQueueFamilyProperties *queue_families =
-           malloc_check(sizeof(VkQueueFamilyProperties) * queue_family_count);
+           malloc_nofail(sizeof(VkQueueFamilyProperties) * queue_family_count);
         vkGetPhysicalDeviceQueueFamilyProperties(
                                  device, &queue_family_count, queue_families);
 
         graphics = -1;
         for (int j=0; j < queue_family_count; j++) {
-            if (queue_families[j].queueFlags & VK_QUEUE_GRAPHICS_BIT)
+            if (queue_families[j].queueFlags & VK_QUEUE_GRAPHICS_BIT) {
                 graphics = j;
+                break;
+            }
         } 
         if (graphics == -1)
             continue;
@@ -647,8 +624,10 @@ static VkPhysicalDevice pick_physical_device(
             vkGetPhysicalDeviceSurfaceSupportKHR(
                                 device, j, surface, &present_support);
 
-            if (present_support == VK_TRUE)
+            if (present_support == VK_TRUE) {
                 present = j;
+                break;
+            }
         } 
         if (present == -1)
             continue;
@@ -659,7 +638,7 @@ static VkPhysicalDevice pick_physical_device(
         uint32_t ext_count;
         vkEnumerateDeviceExtensionProperties(device, NULL, &ext_count, NULL);
         VkExtensionProperties *available_extensions =
-                       malloc_check(sizeof(VkExtensionProperties) * ext_count);
+                       malloc_nofail(sizeof(VkExtensionProperties) * ext_count);
         vkEnumerateDeviceExtensionProperties(
                                device, NULL, &ext_count, available_extensions);
 
@@ -680,27 +659,26 @@ static VkPhysicalDevice pick_physical_device(
         }    
         mem_free(available_extensions);
 
-        if (!extensions_supported)
-            continue;
+        if (!extensions_supported) continue;
 
         // Make sure that surface format count isn't 0
+        // TODO check for actual needed format
         uint32_t format_count;
         vkGetPhysicalDeviceSurfaceFormatsKHR(
                                 device, surface, &format_count, NULL);
-        if (!format_count)
-            continue;
+        if (format_count == 0) continue;
 
         // Make sure that present mode count isn't 0
+        // TODO check for actual needed present mode
         uint32_t present_mode_count;
         vkGetPhysicalDeviceSurfacePresentModesKHR(
                             device, surface, &present_mode_count, NULL);
-        if (!present_mode_count)
-            continue;
+        if (present_mode_count == 0) continue;
 
+        // Multisampling
         VkPhysicalDeviceFeatures supported_features;
         vkGetPhysicalDeviceFeatures(device, &supported_features);
-        if (!supported_features.samplerAnisotropy)
-            continue;
+        if (!supported_features.samplerAnisotropy) continue;
 
         result = device;
         break;
@@ -708,8 +686,7 @@ static VkPhysicalDevice pick_physical_device(
 
     mem_free(devices); 
     if (result == VK_NULL_HANDLE) {
-        errprint("Failed to find a suitable physical device.");
-        exit(EXIT_FAILURE);
+        fatal("Failed to find a suitable physical device.");
     } else {
         *o_graphics_family = (uint32_t) graphics;
         *o_present_family = (uint32_t) present;
@@ -730,7 +707,7 @@ static VkDevice create_logical_device(
     }
 
     VkDeviceQueueCreateInfo* queue_create_infos =
-        malloc_check(sizeof(*queue_create_infos) * queue_count);
+        malloc_nofail(sizeof(*queue_create_infos) * queue_count);
 
     float queue_priority = 1.0f;
     VkDeviceQueueCreateInfo graphics_queue_create_info =  {
@@ -765,12 +742,10 @@ static VkDevice create_logical_device(
     };
 
     VkDevice device;
-
     if (vkCreateDevice(
             physical_device, &device_create_info, NULL, &device) !=
             VK_SUCCESS) {
-        errprint("Failed to create logical device.");
-        exit(EXIT_FAILURE);
+        fatal("Failed to create logical device.");
     }
 
     vkGetDeviceQueue(
@@ -788,14 +763,14 @@ static VkSwapchainKHR create_swapchain(const VkPhysicalDevice physical_device,
         const VkSurfaceKHR surface, uint32_t graphics_family,
         uint32_t present_family, GLFWwindow* const window,
         VkFormat* const o_swapchain_format,
-        VkExtent2D* const o_swapchain_extent, uint32_t *const o_image_count,
+        VkExtent2D* const o_swapchain_extent,
         VkImage* *const o_images) {
     // Choose swap surface format
     uint32_t format_count;
     vkGetPhysicalDeviceSurfaceFormatsKHR(
                                 physical_device, surface, &format_count, NULL);
     VkSurfaceFormatKHR *const formats = 
-            malloc_check(sizeof(VkSurfaceFormatKHR) * format_count);
+            malloc_nofail(sizeof(VkSurfaceFormatKHR) * format_count);
     vkGetPhysicalDeviceSurfaceFormatsKHR(
                 physical_device, surface, &format_count, formats);
 
@@ -818,8 +793,8 @@ static VkSwapchainKHR create_swapchain(const VkPhysicalDevice physical_device,
         }
     }
 
+    // TODO check if we can really use any format
     format = *formats;
-
 format_chosen:
     mem_free(formats);
 
@@ -828,13 +803,12 @@ format_chosen:
     vkGetPhysicalDeviceSurfacePresentModesKHR(
                             physical_device, surface, &present_mode_count, NULL);
     VkPresentModeKHR* present_modes =
-        malloc_check(sizeof(VkPresentModeKHR) * present_mode_count);
+        malloc_nofail(sizeof(VkPresentModeKHR) * present_mode_count);
     vkGetPhysicalDeviceSurfacePresentModesKHR(
         physical_device, surface, &present_mode_count, present_modes);
 
     // NOTE assumes that present_mode_count > 0
     VkPresentModeKHR present_mode = VK_PRESENT_MODE_FIFO_KHR;
-
     for (size_t i=0; i < present_mode_count; i++) {
         if (present_modes[i] == VK_PRESENT_MODE_MAILBOX_KHR) {
             present_mode = present_modes[i];
@@ -843,29 +817,24 @@ format_chosen:
             present_mode = present_modes[i];
         }
     }
-
     mem_free(present_modes);
 
     // Choose swap extent
     VkSurfaceCapabilitiesKHR capabilities;
     vkGetPhysicalDeviceSurfaceCapabilitiesKHR(
                             physical_device, surface, &capabilities);
-
     VkExtent2D extent;
-
     if (capabilities.currentExtent.width != UINT32_MAX) {
         extent = capabilities.currentExtent;
     } else {
         int width;
         int height;
-
         glfwGetFramebufferSize(window, &width, &height);
-
         VkExtent2D actual_extent = {
             (uint32_t) width,
             (uint32_t) height,
         };
-
+        // TODO clamp function?
         actual_extent.width = MAX(capabilities.minImageExtent.width,
                                  MIN(capabilities.maxImageExtent.width,
                                      actual_extent.width));
@@ -876,16 +845,10 @@ format_chosen:
         extent = actual_extent;
     }
 
-    uint32_t image_count = 2;
-    if (capabilities.maxImageCount > 0 &&
-            image_count > capabilities.maxImageCount) {
-        image_count = capabilities.maxImageCount;
-    }
-
     struct VkSwapchainCreateInfoKHR create_info = {
         .sType = VK_STRUCTURE_TYPE_SWAPCHAIN_CREATE_INFO_KHR,
         .surface = surface,
-        .minImageCount = image_count,
+        .minImageCount = 2, // ! hard condition
         .imageFormat = format.format,
         .imageColorSpace = format.colorSpace,
         .imageExtent = extent,
@@ -917,23 +880,24 @@ format_chosen:
     VkSwapchainKHR swapchain;
     if (vkCreateSwapchainKHR(
                 device, &create_info, NULL, &swapchain) != VK_SUCCESS) {
-        errprint("Failed to create swapchain.");
-        exit(EXIT_SUCCESS);
+        fatal("Failed to create swapchain.");
     }
 
-    vkGetSwapchainImagesKHR(device, swapchain, o_image_count, NULL);
-    *o_images = malloc_check(sizeof(VkImage) * (*o_image_count));
-    vkGetSwapchainImagesKHR(device, swapchain, o_image_count, *o_images);
+    uint32_t image_count;
+    vkGetSwapchainImagesKHR(device, swapchain, &image_count, NULL);
+    *o_images = malloc_nofail(sizeof(VkImage) * (image_count));
+    DBASSERT(image_count == 2);
+    vkGetSwapchainImagesKHR(device, swapchain, &image_count, *o_images);
 
     return swapchain;
 }
 
 // TODO merge with create_swapchain
 static VkImageView* create_swapchain_image_views(VkDevice device, VkFormat format,
-        VkImage* images, uint32_t image_count) {
-    VkImageView* views = malloc_check(sizeof(VkImageView) * image_count);
+        VkImage* images) {
+    VkImageView* views = malloc_nofail(sizeof(VkImageView) * 2);
 
-    for (uint32_t i=0; i < image_count; i++) {
+    for (uint32_t i=0; i < 2; i++) {
         VkImageViewCreateInfo create_info = {
             .sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO,
             .image = images[i],
@@ -951,8 +915,7 @@ static VkImageView* create_swapchain_image_views(VkDevice device, VkFormat forma
         };
         if (vkCreateImageView(
               device, &create_info, NULL, &views[i]) != VK_SUCCESS) {
-            errprint("Failed to create image views.");
-            exit(EXIT_FAILURE);
+            fatal("Failed to create image views.");
         }
     }
 
@@ -981,10 +944,7 @@ static VkFormat find_depth_format(VkPhysicalDevice physical_device) {
         }
     }
 
-    if (!found) {
-        errprint("Failed to find format that supports depth buffering.");
-        exit(EXIT_FAILURE);
-    }
+    if (!found) fatal("Failed to find format that supports depth buffering.");
 
     return depth_format;
 }
@@ -1080,8 +1040,7 @@ static VkRenderPass create_render_pass(const VkFormat swapchain_format,
     if (vkCreateRenderPass(
            device, &render_pass_info, NULL, &render_pass) !=
            VK_SUCCESS) {
-        errprint("Failed to create render pass.");
-        exit(EXIT_FAILURE);
+        fatal("Failed to create render pass.");
     }
     return render_pass;
 }
@@ -1099,8 +1058,7 @@ static VkShaderModule create_shader_module(
     if (vkCreateShaderModule(
             device, &create_info, NULL, &shader_module) !=
             VK_SUCCESS) {
-        errprint("Failed to create shader module.");
-        exit(EXIT_FAILURE);
+        fatal("Failed to create shader module.");
     }
     return shader_module;
 }
@@ -1123,8 +1081,7 @@ static VkDescriptorSetLayout create_descriptor_set_layout(VkDevice device)
     VkDescriptorSetLayout layout;
     if (vkCreateDescriptorSetLayout(device, &layout_info, NULL,
             &layout) != VK_SUCCESS) {
-        errprint("Failed to create descriptor set layout.");
-        exit(EXIT_FAILURE);
+        fatal("Failed to create descriptor set layout.");
     }
 
     return layout;
@@ -1142,8 +1099,7 @@ static VkPipeline create_graphics_pipeline(
     size_t vertex_shader_code_size; 
     if (read_binary_file(
             VERTEX_SHADER_PATH, &vertex_shader_code, &vertex_shader_code_size)) {
-        errprint("Failed to read vertex shader");
-        exit(EXIT_FAILURE);
+        fatal("Failed to read vertex shader");
     }
 
     char *fragment_shader_code;
@@ -1151,8 +1107,7 @@ static VkPipeline create_graphics_pipeline(
     if (read_binary_file(
             FRAGMENT_SHADER_PATH, &fragment_shader_code,
             &fragment_shader_code_size)) {
-        errprint("Failed to read fragment shader");
-        exit(EXIT_FAILURE);
+        fatal("Failed to read fragment shader");
     }
 
     VkShaderModule vertex_shader_module = create_shader_module(
@@ -1286,8 +1241,7 @@ static VkPipeline create_graphics_pipeline(
                             &pipeline_layout_info,
                             NULL,
                             &pipeline_layout) != VK_SUCCESS) {
-        errprint("Failed to create pipeline layout.");
-        exit(EXIT_FAILURE);
+        fatal("Failed to create pipeline layout.");
     }
 
     const VkPipelineDepthStencilStateCreateInfo depth_stencil = {
@@ -1323,8 +1277,7 @@ static VkPipeline create_graphics_pipeline(
                               &pipeline_info,
                               NULL,
                               &graphics_pipeline) != VK_SUCCESS) {
-        errprint("Failed to create graphics pipeline.");
-        exit(EXIT_FAILURE);
+        fatal("Failed to create graphics pipeline.");
     }
 
     vkDestroyShaderModule(device, fragment_shader_module, NULL);
@@ -1346,8 +1299,7 @@ static VkCommandPool create_command_pool(VkDevice device, uint32_t queue_family)
     VkCommandPool command_pool;
     if (vkCreateCommandPool(device, &pool_info, NULL, 
             &command_pool) != VK_SUCCESS) {
-        errprint("Failed to create command pool.");
-        exit(EXIT_FAILURE);
+        fatal("Failed to create command pool.");
     }
     return command_pool;
 }
@@ -1418,8 +1370,7 @@ static VkImage create_color_image(
 
     VkImage image;
     if (vkCreateImage(device, &image_create_info, NULL, &image) != VK_SUCCESS) {
-        errprint("Failed to create image.");
-        exit(EXIT_FAILURE);
+        fatal("Failed to create image.");
     }
 
     VkMemoryRequirements memory_requirements;
@@ -1431,8 +1382,7 @@ static VkImage create_color_image(
             VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT
     );
     if (memory_type_index < 0) {
-        errprint("Failed to find suitable memory type for image creation.");
-        exit(EXIT_FAILURE);
+        fatal("Failed to find suitable memory type for image creation.");
     }
 
     VkMemoryAllocateInfo allocate_info = {
@@ -1444,8 +1394,7 @@ static VkImage create_color_image(
     VkDeviceMemory image_memory;
     if (vkAllocateMemory(device, &allocate_info, NULL, &image_memory)
             != VK_SUCCESS) {
-        errprint("Failed to allocate image memory.");
-        exit(EXIT_FAILURE);
+        fatal("Failed to allocate image memory.");
     }
 
     vkBindImageMemory(device, image, image_memory, 0);
@@ -1470,8 +1419,7 @@ static VkImage create_color_image(
     VkImageView image_view;
     if (vkCreateImageView(device, &create_info, NULL,
             &image_view) != VK_SUCCESS) {
-        errprint("Failed to create image views.");
-        exit(EXIT_FAILURE);
+        fatal("Failed to create image views.");
     }
     *o_view = image_view;
 
@@ -1534,8 +1482,7 @@ static VkImage create_depth_image(
 
     VkImage image;
     if (vkCreateImage(device, &image_create_info, NULL, &image) != VK_SUCCESS) {
-        errprint("Failed to create image.");
-        exit(EXIT_FAILURE);
+        fatal("Failed to create image.");
     }
 
     VkMemoryRequirements memory_requirements;
@@ -1555,8 +1502,7 @@ static VkImage create_depth_image(
         }
     }
     if (memory_type_index < 0) {
-        errprint("Failed to find suitable memory type for image creation.");
-        exit(EXIT_FAILURE);
+        fatal("Failed to find suitable memory type for image creation.");
     }
 
     VkMemoryAllocateInfo allocate_info = {
@@ -1568,8 +1514,7 @@ static VkImage create_depth_image(
     VkDeviceMemory image_memory;
     if (vkAllocateMemory(device, &allocate_info, NULL, &image_memory)
             != VK_SUCCESS) {
-        errprint("Failed to allocate image memory.");
-        exit(EXIT_FAILURE);
+        fatal("Failed to allocate image memory.");
     }
 
     vkBindImageMemory(device, image, image_memory, 0);
@@ -1594,8 +1539,7 @@ static VkImage create_depth_image(
     VkImageView image_view;
     if (vkCreateImageView(device, &create_info, NULL,
             &image_view) != VK_SUCCESS) {
-        errprint("Failed to create image views.");
-        exit(EXIT_FAILURE);
+        fatal("Failed to create image views.");
     }
     *o_view = image_view;
 
@@ -1633,14 +1577,13 @@ static VkImage create_depth_image(
 }
 
 static VkFramebuffer* create_framebuffers(
-        VkDevice device, uint32_t swapchain_image_count,
+        VkDevice device,
         VkImageView color_image_view, VkImageView depth_image_view,
         VkImageView* swapchain_image_views, VkRenderPass render_pass,
         VkExtent2D swapchain_extent)
 {
-    VkFramebuffer* framebuffers = malloc_check(
-            sizeof(VkFramebuffer) * swapchain_image_count);
-    for (size_t i = 0; i < swapchain_image_count; ++i) {
+    VkFramebuffer* framebuffers = malloc_nofail(sizeof(VkFramebuffer) * 2);
+    for (size_t i = 0; i < 2; ++i) {
         enum { attachment_count = 3 };
         VkImageView attachments[attachment_count] = {
             color_image_view,
@@ -1660,8 +1603,7 @@ static VkFramebuffer* create_framebuffers(
 
         if (vkCreateFramebuffer(device, &framebuffer_info, NULL,
                 &framebuffers[i]) != VK_SUCCESS) {
-            errprint("Failed to create framebuffer.");
-            exit(EXIT_FAILURE);
+            fatal("Failed to create framebuffer.");
         }
     }
     return framebuffers;
@@ -1669,28 +1611,27 @@ static VkFramebuffer* create_framebuffers(
 
 static VkDescriptorPool create_descriptor_pool(
         VkDevice device, VkDescriptorType* descriptor_types,
-        size_t descriptor_type_count, uint32_t swapchain_image_count
+        size_t descriptor_type_count
 ) {
-    VkDescriptorPoolSize* pool_sizes = malloc_check(
+    VkDescriptorPoolSize* pool_sizes = malloc_nofail(
             sizeof(VkDescriptorPoolSize) * descriptor_type_count);
 
     for (size_t i=0; i < descriptor_type_count; i++) {
         pool_sizes[i].type = descriptor_types[i];
-        pool_sizes[i].descriptorCount = swapchain_image_count;
+        pool_sizes[i].descriptorCount = 2;
     }
 
     VkDescriptorPoolCreateInfo pool_info = {
         .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO,
         .poolSizeCount = descriptor_type_count,
         .pPoolSizes = pool_sizes,
-        .maxSets = swapchain_image_count,
+        .maxSets = 2,
     };
 
     VkDescriptorPool descriptor_pool;
     if (vkCreateDescriptorPool(device, &pool_info, NULL, &descriptor_pool)
             != VK_SUCCESS) {
-        errprint("Failed to create descriptor pool.");
-        exit(EXIT_FAILURE);
+        fatal("Failed to create descriptor pool.");
     }
 
     mem_free(pool_sizes);
@@ -1853,44 +1794,16 @@ static VkBuffer device_local_buffer_from_data(
     return device_local_buffer;
 }
 
-void create_sync_objects(
-        VkDevice device,
-        uint32_t swapchain_image_count,
-        VkFence* *const commands_executed,
-        VkSemaphore* *const image_available,
-        VkSemaphore* *const draw_finished
-) {
-    *commands_executed = malloc_check(sizeof(VkFence) * swapchain_image_count);
-    *image_available = malloc_check(sizeof(VkSemaphore) * swapchain_image_count);
-    *draw_finished = malloc_check(sizeof(VkSemaphore) * swapchain_image_count);
-
-    VkSemaphoreCreateInfo semaphore_info = {
-        .sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO,
-    };
-
-    VkFenceCreateInfo fence_info = {
-        .sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO,
-        .flags = VK_FENCE_CREATE_SIGNALED_BIT,
-    };
-
-    for (size_t i = 0; i < swapchain_image_count; i++) {
-        vkCreateSemaphore(device, &semaphore_info, NULL, &(*image_available)[i]);
-        vkCreateSemaphore(device, &semaphore_info, NULL, &(*draw_finished)[i]);
-        vkCreateFence(device, &fence_info, NULL, &(*commands_executed)[i]);
-    }
-}
-
 VkBuffer* create_uniform_buffers(
         VkPhysicalDevice physical_device,
         VkDevice device,
-        uint32_t swapchain_image_count,
         VkDeviceMemory* *const o_memories
 ) {
-    VkBuffer* uniform_buffers = malloc_check(
-                                sizeof(VkBuffer) * swapchain_image_count);
-    VkDeviceMemory* memories = malloc_check(
-            sizeof(VkDeviceMemory) * swapchain_image_count);
-    for (uint32_t i=0; i < swapchain_image_count; i++) {
+    VkBuffer* uniform_buffers = malloc_nofail(
+                                sizeof(VkBuffer) * 2);
+    VkDeviceMemory* memories = malloc_nofail(
+            sizeof(VkDeviceMemory) * 2);
+    for (uint32_t i=0; i < 2; i++) {
         create_buffer(
                 physical_device,
                 device,
@@ -1911,33 +1824,31 @@ static VkDescriptorSet* create_descriptor_sets(
         VkDevice device,
         VkDescriptorPool descriptor_pool,
         VkDescriptorSetLayout descriptor_set_layout,
-        uint32_t swapchain_image_count,
         VkBuffer* uniform_buffers
 ) {
-    VkDescriptorSetLayout* layout_copies = malloc_check(
-            sizeof(VkDescriptorSetLayout) * swapchain_image_count);
-    for (size_t i=0; i < swapchain_image_count; i++) {
+    VkDescriptorSetLayout* layout_copies = malloc_nofail(
+            sizeof(VkDescriptorSetLayout) * 2);
+    for (size_t i=0; i < 2; i++) {
         layout_copies[i] = descriptor_set_layout;
     }
 
     VkDescriptorSetAllocateInfo allocate_info = {
         .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO,
         .descriptorPool = descriptor_pool,
-        .descriptorSetCount = swapchain_image_count,
+        .descriptorSetCount = 2,
         .pSetLayouts = layout_copies,
     };
 
-    VkDescriptorSet* descriptor_sets = malloc_check(
-            sizeof(VkDescriptorSet) * swapchain_image_count);
+    VkDescriptorSet* descriptor_sets = malloc_nofail(
+            sizeof(VkDescriptorSet) * 2);
     if (vkAllocateDescriptorSets(device, &allocate_info, descriptor_sets)
             != VK_SUCCESS) {
-        errprint("Failed to allocate descriptor sets.");
-        exit(EXIT_FAILURE);
+        fatal("Failed to allocate descriptor sets.");
     }
 
     mem_free(layout_copies);
 
-    for (size_t i = 0; i < swapchain_image_count; i++) {
+    for (size_t i = 0; i < 2; i++) {
         VkDescriptorBufferInfo buffer_info = {
             .buffer = uniform_buffers[i],
             .offset = 0,
@@ -1969,7 +1880,6 @@ static VkDescriptorSet* create_descriptor_sets(
 static VkCommandBuffer* record_command_buffers(
         VkDevice device,
         VkCommandPool command_pool,
-        uint32_t swapchain_image_count,
         VkRenderPass render_pass,
         VkFramebuffer* swapchain_framebuffers,
         VkExtent2D swapchain_extent,
@@ -1981,22 +1891,19 @@ static VkCommandBuffer* record_command_buffers(
         VkDescriptorSet* descriptor_sets,
         PushConstants* push_constants
 ) {
-    VkCommandBuffer* command_buffers = malloc_check(
-            sizeof(VkCommandBuffer) * swapchain_image_count); 
+    VkCommandBuffer* command_buffers = malloc_nofail(
+            sizeof(VkCommandBuffer) * 2); 
     VkCommandBufferAllocateInfo allocate_info = {
         .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO,
         .commandPool = command_pool,
         .level = VK_COMMAND_BUFFER_LEVEL_PRIMARY,
-        .commandBufferCount = swapchain_image_count,
+        .commandBufferCount = 2,
     };
 
     if (vkAllocateCommandBuffers(device, &allocate_info, command_buffers) !=
-            VK_SUCCESS) {
-        errprint("Failed to allocate command buffers.");
-        exit(EXIT_FAILURE);
-    }
+            VK_SUCCESS) fatal("Failed to allocate command buffers.");
 
-    for (size_t i = 0; i < swapchain_image_count; i++) {
+    for (size_t i = 0; i < 2; i++) {
         VkCommandBufferBeginInfo begin_info = {
             .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
             .flags = VK_COMMAND_BUFFER_USAGE_SIMULTANEOUS_USE_BIT,
@@ -2004,8 +1911,7 @@ static VkCommandBuffer* record_command_buffers(
 
         if (vkBeginCommandBuffer(command_buffers[i], &begin_info) !=
                 VK_SUCCESS) {
-            errprint("Failed to begin recording command buffer.");
-            exit(EXIT_FAILURE);
+            fatal("Failed to begin recording command buffer.");
         }
 
         VkClearValue clear_values[2] = {
@@ -2048,8 +1954,7 @@ static VkCommandBuffer* record_command_buffers(
         vkCmdEndRenderPass(command_buffers[i]);
 
         if (vkEndCommandBuffer(command_buffers[i]) != VK_SUCCESS) {
-            errprint("Failed to record command buffer.");
-            exit(EXIT_FAILURE);
+            fatal("Failed to record command buffer.");
         }
     }
 
