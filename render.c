@@ -23,7 +23,6 @@ typedef struct PushConstants {
     mat4 model;
 } PushConstants;
 
-static VkInstance create_instance();
 static VkPhysicalDevice pick_physical_device(
         const VkInstance instance, const VkSurfaceKHR surface,
         uint32_t *const o_present_family, uint32_t *const o_graphics_family);
@@ -42,14 +41,13 @@ static VkImageView* create_swapchain_image_views(VkDevice device, VkFormat forma
         VkImage* images);
 static VkRenderPass create_render_pass(VkFormat swapchain_format,
         VkPhysicalDevice physical_device, VkDevice device);
-static VkDescriptorSetLayout create_descriptor_set_layout(VkDevice device);
 static VkPipeline create_graphics_pipeline(
         VkDevice device,
         VkExtent2D swapchain_extent,
         VkSampleCountFlagBits sample_count,
         VkDescriptorSetLayout descriptor_set_layout,
         VkRenderPass render_pass,
-        VkPipelineLayout* o_layout);
+        VkPipelineLayout pipeline_layout);
 static VkImage create_color_image(
         VkDevice device, VkPhysicalDevice physical_device, VkFormat format,
         VkExtent2D extent, VkSampleCountFlagBits sample_count,
@@ -211,13 +209,40 @@ Render* render_init() {
 
     Render* self = (Render*) malloc_nofail(sizeof(Render));
     self->window = window;
-    self->instance = create_instance();
+
+    VkApplicationInfo appInfo = {
+        .sType = VK_STRUCTURE_TYPE_APPLICATION_INFO,
+        .pApplicationName = APP_NAME,
+        .applicationVersion = VK_MAKE_VERSION(0, 0, 1),
+        .pEngineName = ENGINE_NAME,
+        .engineVersion = VK_MAKE_VERSION(0, 0, 1),
+        .apiVersion = VK_API_VERSION_1_0,
+    };
+    uint32_t glfw_ext_count;
+    const char* *glfw_extensions;
+    glfw_extensions = glfwGetRequiredInstanceExtensions(&glfw_ext_count);
+    VkInstanceCreateInfo create_info = {
+        .sType = VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO,
+        .pApplicationInfo = &appInfo,
+        .enabledExtensionCount = glfw_ext_count,
+        .ppEnabledExtensionNames = glfw_extensions,
+    };
+    if (VALIDATION_ENABLED) {
+        create_info.enabledLayerCount = 1;
+        create_info.ppEnabledLayerNames = (const char *const *) VALIDATION_LAYERS;
+    } else {
+        create_info.enabledLayerCount = 0;
+    }
+    if (vkCreateInstance(&create_info, NULL, &self->instance) != VK_SUCCESS) {
+        fatal("Failed to create instance");
+    }
 
     if (glfwCreateWindowSurface(
             self->instance, window, NULL, &self->surface) != VK_SUCCESS) {
         fatal("Failed to create surface.");
     }
 
+    // TODO inline and merge?
     self->physical_device = pick_physical_device(
             self->instance, self->surface, &self->graphics_family,
             &self->present_family);
@@ -237,7 +262,6 @@ Render* render_init() {
     self->vertex_buffer = VK_NULL_HANDLE;
     self->index_buffer = VK_NULL_HANDLE;
 
-    // TODO merge descriptor set layout and pipeline layout creation
     VkDescriptorSetLayoutBinding uniform_binding = {
         .binding = 0,
         .descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
@@ -252,6 +276,26 @@ Render* render_init() {
     if (vkCreateDescriptorSetLayout(self->device, &layout_info, NULL,
             &self->descriptor_set_layout) != VK_SUCCESS) {
         fatal("Failed to create descriptor set layout.");
+    }
+    VkPushConstantRange push_constant_range = {
+        .stageFlags = VK_SHADER_STAGE_VERTEX_BIT,
+        .offset = 0,
+        .size = sizeof(PushConstants),
+    };
+    const VkPipelineLayoutCreateInfo pipeline_layout_info = {
+        .sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO,
+        .setLayoutCount = 1,
+        .pSetLayouts = &self->descriptor_set_layout,
+        .pushConstantRangeCount = 1,
+        .pPushConstantRanges = &push_constant_range,
+    };
+    VkPipelineLayout pipeline_layout;
+    if (vkCreatePipelineLayout(
+                            self->device,
+                            &pipeline_layout_info,
+                            NULL,
+                            &self->graphics_pipeline_layout) != VK_SUCCESS) {
+        fatal("Failed to create pipeline layout.");
     }
 
     VkSemaphoreCreateInfo semaphore_info = {
@@ -303,7 +347,7 @@ static void render_swapchain_dependent_init(Render* self, GLFWwindow* window)
             SAMPLE_COUNT,
             self->descriptor_set_layout,
             self->render_pass,
-            &self->graphics_pipeline_layout
+            self->graphics_pipeline_layout
     );
     self->color_image = create_color_image(
             self->device,
@@ -335,7 +379,7 @@ static void render_swapchain_dependent_init(Render* self, GLFWwindow* window)
             self->swapchain_extent
     );
 
-    VkDescriptorType descriptor_types[1] = { VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER };
+    VkDescriptorType descriptor_types[1] = {VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER};
     self->descriptor_pool = create_descriptor_pool(
             self->device, descriptor_types, 1
     );
@@ -493,6 +537,8 @@ void render_draw_frame(Render* self, GLFWwindow* window) {
     PushConstants push_constants = {
         .model = GLM_MAT4_IDENTITY_INIT,
     };
+    push_constants.model[3][2] = 10.0;
+    push_constants.model[3][0] = 5.0;
     // TODO change to one-frame command buffer
     self->command_buffers = record_command_buffers(
             self->device,
@@ -564,41 +610,6 @@ void render_draw_frame(Render* self, GLFWwindow* window) {
     }
 
     self->current_frame = (current_frame + 1) % 2;
-}
-
-static VkInstance create_instance()
-{
-    VkApplicationInfo appInfo = {
-        .sType = VK_STRUCTURE_TYPE_APPLICATION_INFO,
-        .pApplicationName = APP_NAME,
-        .applicationVersion = VK_MAKE_VERSION(0, 0, 1),
-        .pEngineName = ENGINE_NAME,
-        .engineVersion = VK_MAKE_VERSION(0, 0, 1),
-        .apiVersion = VK_API_VERSION_1_0,
-    };
-
-    uint32_t glfw_ext_count;
-    const char* *glfw_extensions;
-    glfw_extensions = glfwGetRequiredInstanceExtensions(&glfw_ext_count);
-    VkInstanceCreateInfo create_info = {
-        .sType = VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO,
-        .pApplicationInfo = &appInfo,
-        .enabledExtensionCount = glfw_ext_count,
-        .ppEnabledExtensionNames = glfw_extensions,
-    };
-
-    if (VALIDATION_ENABLED) {
-        create_info.enabledLayerCount = 1;
-        create_info.ppEnabledLayerNames = (const char *const *) VALIDATION_LAYERS;
-    } else {
-        create_info.enabledLayerCount = 0;
-    }
-
-    VkInstance instance;
-    if (vkCreateInstance(&create_info, NULL, &instance) != VK_SUCCESS) {
-        fatal("Failed to create instance");
-    }
-    return instance;
 }
 
 static VkPhysicalDevice pick_physical_device(
@@ -1090,7 +1101,7 @@ static VkPipeline create_graphics_pipeline(
         VkSampleCountFlagBits sample_count,
         VkDescriptorSetLayout descriptor_set_layout,
         VkRenderPass render_pass,
-        VkPipelineLayout* o_layout)
+        VkPipelineLayout pipeline_layout)
 { 
     char *vertex_shader_code; 
     size_t vertex_shader_code_size; 
@@ -1192,8 +1203,8 @@ static VkPipeline create_graphics_pipeline(
         .rasterizerDiscardEnable = VK_FALSE,
         .lineWidth = 1.0f,
         .polygonMode = VK_POLYGON_MODE_FILL,
-        .cullMode = VK_CULL_MODE_FRONT_BIT,
-        .frontFace = VK_FRONT_FACE_COUNTER_CLOCKWISE,
+        .cullMode = VK_CULL_MODE_BACK_BIT,
+        .frontFace = VK_FRONT_FACE_CLOCKWISE,
         .depthBiasEnable = VK_FALSE,
     };
 
@@ -1217,29 +1228,6 @@ static VkPipeline create_graphics_pipeline(
         .attachmentCount = 1,
         .pAttachments = &color_blend_attachment,
     };
-
-    VkPushConstantRange push_constant_range = {
-        .stageFlags = VK_SHADER_STAGE_VERTEX_BIT,
-        .offset = 0,
-        .size = sizeof(PushConstants),
-    };
-
-    const VkPipelineLayoutCreateInfo pipeline_layout_info = {
-        .sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO,
-        .setLayoutCount = 1,
-        .pSetLayouts = &descriptor_set_layout,
-        .pushConstantRangeCount = 1,
-        .pPushConstantRanges = &push_constant_range,
-    };
-
-    VkPipelineLayout pipeline_layout;
-    if (vkCreatePipelineLayout(
-                            device,
-                            &pipeline_layout_info,
-                            NULL,
-                            &pipeline_layout) != VK_SUCCESS) {
-        fatal("Failed to create pipeline layout.");
-    }
 
     const VkPipelineDepthStencilStateCreateInfo depth_stencil = {
         .sType = VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO,
@@ -1282,7 +1270,6 @@ static VkPipeline create_graphics_pipeline(
     mem_free(vertex_shader_code);
     mem_free(fragment_shader_code);
 
-    *o_layout = pipeline_layout;
     return graphics_pipeline;
 }
 
@@ -1642,6 +1629,7 @@ static int find_memory_type(
     return memory_type_index;
 }
 
+// TODO straighten out shady return values
 static int create_buffer(
         VkPhysicalDevice physical_device,
         VkDevice device,
@@ -1672,9 +1660,7 @@ static int create_buffer(
     };
 
     if (vkAllocateMemory(device, &allocate_info, NULL, bufferMemory)
-            != VK_SUCCESS) {
-        return 2;
-    }
+            != VK_SUCCESS) return 2;
 
     vkBindBufferMemory(device, *buffer, *bufferMemory, 0);
     return 0;
@@ -1965,15 +1951,15 @@ void render_test()
 
     Vertex vertices[3] = {
         {
-            .position = {2.0, 1.0, 20.0},
+            .position = {2.0, 1.0, 10.0},
             .color = {1.0, 1.0, 1.0},
         },
         {
-            .position = {1.0, 1.0, 20.0},
+            .position = {1.0, 1.0, 10.0},
             .color = {1.0, 1.0, 1.0},
         },
         {
-            .position = {3.0, 3.0, 20.0},
+            .position = {6.0, 10.0, 10.0},
             .color = {1.0, 1.0, 1.0},
         },
     };
