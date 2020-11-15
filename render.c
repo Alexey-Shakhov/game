@@ -237,7 +237,22 @@ Render* render_init() {
     self->vertex_buffer = VK_NULL_HANDLE;
     self->index_buffer = VK_NULL_HANDLE;
 
-    self->descriptor_set_layout = create_descriptor_set_layout(self->device);
+    // TODO merge descriptor set layout and pipeline layout creation
+    VkDescriptorSetLayoutBinding uniform_binding = {
+        .binding = 0,
+        .descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
+        .descriptorCount = 1,
+        .stageFlags = VK_SHADER_STAGE_VERTEX_BIT,
+    };
+    VkDescriptorSetLayoutCreateInfo layout_info = {
+        .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO,
+        .bindingCount = 1,
+        .pBindings = &uniform_binding,
+    };
+    if (vkCreateDescriptorSetLayout(self->device, &layout_info, NULL,
+            &self->descriptor_set_layout) != VK_SUCCESS) {
+        fatal("Failed to create descriptor set layout.");
+    }
 
     VkSemaphoreCreateInfo semaphore_info = {
         .sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO,
@@ -1067,30 +1082,6 @@ static VkShaderModule create_shader_module(
         fatal("Failed to create shader module.");
     }
     return shader_module;
-}
-
-// TODO merge descriptor set layout and pipeline layout creation
-static VkDescriptorSetLayout create_descriptor_set_layout(VkDevice device)
-{
-    VkDescriptorSetLayoutBinding uniform_binding = {
-        .binding = 0,
-        .descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
-        .descriptorCount = 1,
-        .stageFlags = VK_SHADER_STAGE_VERTEX_BIT,
-    };
-
-    VkDescriptorSetLayoutCreateInfo layout_info = {
-        .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO,
-        .bindingCount = 1,
-        .pBindings = &uniform_binding,
-    };
-    VkDescriptorSetLayout layout;
-    if (vkCreateDescriptorSetLayout(device, &layout_info, NULL,
-            &layout) != VK_SUCCESS) {
-        fatal("Failed to create descriptor set layout.");
-    }
-
-    return layout;
 }
 
 static VkPipeline create_graphics_pipeline(
