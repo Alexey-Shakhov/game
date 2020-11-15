@@ -50,7 +50,6 @@ static VkPipeline create_graphics_pipeline(
         VkDescriptorSetLayout descriptor_set_layout,
         VkRenderPass render_pass,
         VkPipelineLayout* o_layout);
-static VkCommandPool create_command_pool(VkDevice device, uint32_t queue_family);
 static VkImage create_color_image(
         VkDevice device, VkPhysicalDevice physical_device, VkFormat format,
         VkExtent2D extent, VkSampleCountFlagBits sample_count,
@@ -225,8 +224,15 @@ Render* render_init() {
     self->device = create_logical_device(self->physical_device, self->surface,
             self->graphics_family, self->present_family, &self->graphics_queue,
             &self->present_queue);
-    self->graphics_command_pool = create_command_pool(
-            self->device, self->graphics_family);
+
+    VkCommandPoolCreateInfo pool_info = {
+        .sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO,
+        .queueFamilyIndex = self->graphics_family,
+    };
+    if (vkCreateCommandPool(self->device, &pool_info, NULL, 
+            &self->graphics_command_pool) != VK_SUCCESS) {
+        fatal("Failed to create command pool.");
+    }
 
     self->vertex_buffer = VK_NULL_HANDLE;
     self->index_buffer = VK_NULL_HANDLE;
@@ -1287,21 +1293,6 @@ static VkPipeline create_graphics_pipeline(
 
     *o_layout = pipeline_layout;
     return graphics_pipeline;
-}
-
-static VkCommandPool create_command_pool(VkDevice device, uint32_t queue_family)
-{
-    VkCommandPoolCreateInfo pool_info = {
-        .sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO,
-        .queueFamilyIndex = queue_family,
-    };
-
-    VkCommandPool command_pool;
-    if (vkCreateCommandPool(device, &pool_info, NULL, 
-            &command_pool) != VK_SUCCESS) {
-        fatal("Failed to create command pool.");
-    }
-    return command_pool;
 }
 
 static VkCommandBuffer begin_one_time_command_buffer(
