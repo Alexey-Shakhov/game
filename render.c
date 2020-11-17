@@ -369,6 +369,7 @@ Render* render_init() {
     VkCommandPoolCreateInfo pool_info = {
         .sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO,
         .queueFamilyIndex = self->graphics_family,
+        .flags = VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT,
     };
     if (vkCreateCommandPool(self->device, &pool_info, NULL, 
             &self->graphics_command_pool) != VK_SUCCESS) {
@@ -506,7 +507,6 @@ static void render_swapchain_dependent_init(Render* self, GLFWwindow* window)
             (uint32_t) width,
             (uint32_t) height,
         };
-        // TODO clamp function?
         actual_extent.width = MAX(capabilities.minImageExtent.width,
                                  MIN(capabilities.maxImageExtent.width,
                                      actual_extent.width));
@@ -913,14 +913,14 @@ static void render_swapchain_dependent_init(Render* self, GLFWwindow* window)
     for (size_t i=0; i < 2; i++) {
         layout_copies[i] = self->descriptor_set_layout;
     }
-    VkDescriptorSetAllocateInfo allocate_info = {
+    VkDescriptorSetAllocateInfo desc_set_alloc_info = {
         .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO,
         .descriptorPool = self->descriptor_pool,
         .descriptorSetCount = 2,
         .pSetLayouts = layout_copies,
     };
     self->descriptor_sets = malloc_nofail(sizeof(VkDescriptorSet) * 2);
-    if (vkAllocateDescriptorSets(self->device, &allocate_info, self->descriptor_sets)
+    if (vkAllocateDescriptorSets(self->device, &desc_set_alloc_info, self->descriptor_sets)
             != VK_SUCCESS) fatal("Failed to allocate descriptor sets.");
     mem_free(layout_copies);
 
@@ -975,6 +975,135 @@ static void render_swapchain_dependent_init(Render* self, GLFWwindow* window)
     }
 
     self->current_frame = 0;
+
+    // ALLOCATE COMMAND BUFFERS
+    // TODO change to one-frame command buffer
+    self->command_buffers = malloc_nofail(sizeof(VkCommandBuffer) * 2); 
+    VkCommandBufferAllocateInfo cmdbuf_allocate_info = {
+        .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO,
+        .commandPool = self->graphics_command_pool,
+        .level = VK_COMMAND_BUFFER_LEVEL_PRIMARY,
+        .commandBufferCount = 2,
+    };
+
+    if (vkAllocateCommandBuffers(self->device, &cmdbuf_allocate_info,
+            self->command_buffers) != VK_SUCCESS) {
+        fatal("Failed to allocate command buffers.");
+    }
+}
+
+void render_draw_frame(Render* self, GLFWwindow* window) {
+    size_t current_frame = self->current_frame;
+    PushConstants push_constants = {
+        .model = GLM_MAT4_IDENTITY_INIT,
+    };
+
+    uint32_t image_index;
+    VkResult acquire_image_result =
+        vkAcquireNextImageKHR(self->device, self->swapchain, UINT64_MAX,
+                self->image_available_semaphores[current_frame], VK_NULL_HANDLE,
+                &image_index);
+
+    if (acquire_image_result == VK_ERROR_OUT_OF_DATE_KHR) {
+        recreate_swapchain(self, window);
+        return;
+    } else if (acquire_image_result != VK_SUCCESS &&
+            acquire_image_result != VK_SUBOPTIMAL_KHR) {
+        fatal("Failed to acquire swapchain image.");
+    }
+
+    // TODO extract code that doesn't change between command buffers
+    vkWaitForFences(
+            self->device, 1, &self->commands_executed_fences[current_frame],
+            VK_TRUE, UINT64_MAX);
+    VkCommandBufferBeginInfo begin_info = {
+        .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
+        .flags = VK_COMMAND_BUFFER_USAGE_SIMULTANEOUS_USE_BIT,
+    };
+    if (vkBeginCommandBuffer(self->command_buffers[current_frame], &begin_info) !=
+            VK_SUCCESS) {
+        fatal("Failed to begin recording command buffer.");
+    }
+    VkClearValue clear_values[2] = {
+        { .color = {0.0f, 0.0f, 0.0f, 1.0f} },
+        { .depthStencil = {1.0f, 0} },
+    };
+    VkRenderPassBeginInfo render_pass_info = {
+        .sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO,
+        .renderPass = self->render_pass,
+        .framebuffer = self->framebuffers[current_frame],
+        .renderArea.offset = {0, 0},
+        .renderArea.extent = self->swapchain_extent,
+        .clearValueCount = 2,
+        .pClearValues = clear_values,
+    };
+
+    vkCmdBeginRenderPass(self->command_buffers[current_frame], &render_pass_info,
+                         VK_SUBPASS_CONTENTS_INLINE);
+
+    vkCmdPushConstants(
+            self->command_buffers[current_frame],
+            self->graphics_pipeline_layout,
+            VK_SHADER_STAGE_VERTEX_BIT,
+            0,
+            sizeof(PushConstants),
+            &push_constants);
+
+    vkCmdBindPipeline(self->command_buffers[current_frame],
+            VK_PIPELINE_BIND_POINT_GRAPHICS, self->graphics_pipeline);
+
+    VkDeviceSize offset = 0;
+    vkCmdBindVertexBuffers(self->command_buffers[current_frame], 0, 1, &self->vertex_buffer,
+            &offset);
+    vkCmdBindIndexBuffer(self->command_buffers[current_frame], self->index_buffer, 0,
+            VK_INDEX_TYPE_UINT16);
+    vkCmdBindDescriptorSets(self->command_buffers[current_frame],
+            VK_PIPELINE_BIND_POINT_GRAPHICS, self->graphics_pipeline_layout, 0, 1,
+            &self->descriptor_sets[current_frame], 0, NULL);
+    vkCmdDrawIndexed(self->command_buffers[current_frame], 3, 1, 0, 0, 0);
+    vkCmdEndRenderPass(self->command_buffers[current_frame]);
+
+    if (vkEndCommandBuffer(self->command_buffers[current_frame]) != VK_SUCCESS) {
+        fatal("Failed to record command buffer.");
+    }
+
+    VkPipelineStageFlags wait_mask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
+    VkSubmitInfo submit_info = {
+        .sType = VK_STRUCTURE_TYPE_SUBMIT_INFO,
+        .waitSemaphoreCount = 1,
+        .pWaitSemaphores = &self->image_available_semaphores[current_frame],
+        .pWaitDstStageMask = &wait_mask,
+        .commandBufferCount = 1,
+        .pCommandBuffers = &self->command_buffers[image_index],
+        .signalSemaphoreCount = 1,
+        .pSignalSemaphores = &self->draw_finished_semaphores[current_frame],
+    };
+
+    vkResetFences(self->device, 1, &self->commands_executed_fences[current_frame]);
+
+    if (vkQueueSubmit(self->graphics_queue, 1, &submit_info,
+            self->commands_executed_fences[current_frame]) != VK_SUCCESS) {
+        fatal("Failed to submit draw command buffer.");
+    }
+
+    VkPresentInfoKHR present_info = {
+        .sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR,
+        .waitSemaphoreCount = 1,
+        .pWaitSemaphores = &self->draw_finished_semaphores[current_frame],
+        .swapchainCount = 1,
+        .pSwapchains = &self->swapchain,
+        .pImageIndices = &image_index,
+    };
+
+    VkResult present_result = vkQueuePresentKHR(self->present_queue, &present_info);
+    if (present_result == VK_ERROR_OUT_OF_DATE_KHR ||
+            present_result == VK_SUBOPTIMAL_KHR) {
+        recreate_swapchain(self, window);
+    } else if (present_result != VK_SUCCESS) {
+        fatal("Failed to present swapchain image.");
+    }
+
+    self->current_frame = (current_frame + 1) % 2;
 }
 
 void render_upload_map_mesh(
@@ -1079,135 +1208,6 @@ void render_destroy(Render* self)
     glfwTerminate();
 
     mem_free(self);
-}
-
-void render_draw_frame(Render* self, GLFWwindow* window) {
-    PushConstants push_constants = {
-        .model = GLM_MAT4_IDENTITY_INIT,
-    };
-
-    // TODO change to one-frame command buffer
-    self->command_buffers = malloc_nofail(sizeof(VkCommandBuffer) * 2); 
-    VkCommandBufferAllocateInfo allocate_info = {
-        .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO,
-        .commandPool = self->graphics_command_pool,
-        .level = VK_COMMAND_BUFFER_LEVEL_PRIMARY,
-        .commandBufferCount = 2,
-    };
-
-    if (vkAllocateCommandBuffers(self->device, &allocate_info, self->command_buffers) !=
-            VK_SUCCESS) fatal("Failed to allocate command buffers.");
-
-    for (size_t i = 0; i < 2; i++) {
-        VkCommandBufferBeginInfo begin_info = {
-            .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
-            .flags = VK_COMMAND_BUFFER_USAGE_SIMULTANEOUS_USE_BIT,
-        };
-
-        if (vkBeginCommandBuffer(self->command_buffers[i], &begin_info) !=
-                VK_SUCCESS) {
-            fatal("Failed to begin recording command buffer.");
-        }
-
-        VkClearValue clear_values[2] = {
-            { .color = {0.0f, 0.0f, 0.0f, 1.0f} },
-            { .depthStencil = {1.0f, 0} },
-        };
-        VkRenderPassBeginInfo render_pass_info = {
-            .sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO,
-            .renderPass = self->render_pass,
-            .framebuffer = self->framebuffers[i],
-            .renderArea.offset = {0, 0},
-            .renderArea.extent = self->swapchain_extent,
-            .clearValueCount = 2,
-            .pClearValues = clear_values,
-        };
-
-        vkCmdBeginRenderPass(self->command_buffers[i], &render_pass_info,
-                             VK_SUBPASS_CONTENTS_INLINE);
-
-        vkCmdPushConstants(
-                self->command_buffers[i],
-                self->graphics_pipeline_layout,
-                VK_SHADER_STAGE_VERTEX_BIT,
-                0,
-                sizeof(PushConstants),
-                &push_constants);
-
-        vkCmdBindPipeline(self->command_buffers[i],
-                VK_PIPELINE_BIND_POINT_GRAPHICS, self->graphics_pipeline);
-
-        VkDeviceSize offset = 0;
-        vkCmdBindVertexBuffers(self->command_buffers[i], 0, 1, &self->vertex_buffer,
-                &offset);
-        vkCmdBindIndexBuffer(self->command_buffers[i], self->index_buffer, 0,
-                VK_INDEX_TYPE_UINT16);
-        vkCmdBindDescriptorSets(self->command_buffers[i],
-                VK_PIPELINE_BIND_POINT_GRAPHICS, self->graphics_pipeline_layout, 0, 1,
-                &self->descriptor_sets[i], 0, NULL);
-        vkCmdDrawIndexed(self->command_buffers[i], 3, 1, 0, 0, 0);
-        vkCmdEndRenderPass(self->command_buffers[i]);
-
-        if (vkEndCommandBuffer(self->command_buffers[i]) != VK_SUCCESS) {
-            fatal("Failed to record command buffer.");
-        }
-    }
-
-    size_t current_frame = self->current_frame;
-    vkWaitForFences(
-            self->device, 1, &self->commands_executed_fences[current_frame],
-            VK_TRUE, UINT64_MAX);
-    uint32_t image_index;
-    VkResult acquire_image_result =
-        vkAcquireNextImageKHR(self->device, self->swapchain, UINT64_MAX,
-                self->image_available_semaphores[current_frame], VK_NULL_HANDLE,
-                &image_index);
-
-    if (acquire_image_result == VK_ERROR_OUT_OF_DATE_KHR) {
-        recreate_swapchain(self, window);
-        return;
-    } else if (acquire_image_result != VK_SUCCESS &&
-            acquire_image_result != VK_SUBOPTIMAL_KHR) {
-        fatal("Failed to acquire swapchain image.");
-    }
-
-    VkPipelineStageFlags wait_mask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
-    VkSubmitInfo submit_info = {
-        .sType = VK_STRUCTURE_TYPE_SUBMIT_INFO,
-        .waitSemaphoreCount = 1,
-        .pWaitSemaphores = &self->image_available_semaphores[current_frame],
-        .pWaitDstStageMask = &wait_mask,
-        .commandBufferCount = 1,
-        .pCommandBuffers = &self->command_buffers[image_index],
-        .signalSemaphoreCount = 1,
-        .pSignalSemaphores = &self->draw_finished_semaphores[current_frame],
-    };
-
-    vkResetFences(self->device, 1, &self->commands_executed_fences[current_frame]);
-
-    if (vkQueueSubmit(self->graphics_queue, 1, &submit_info,
-            self->commands_executed_fences[current_frame]) != VK_SUCCESS) {
-        fatal("Failed to submit draw command buffer.");
-    }
-
-    VkPresentInfoKHR present_info = {
-        .sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR,
-        .waitSemaphoreCount = 1,
-        .pWaitSemaphores = &self->draw_finished_semaphores[current_frame],
-        .swapchainCount = 1,
-        .pSwapchains = &self->swapchain,
-        .pImageIndices = &image_index,
-    };
-
-    VkResult present_result = vkQueuePresentKHR(self->present_queue, &present_info);
-    if (present_result == VK_ERROR_OUT_OF_DATE_KHR ||
-            present_result == VK_SUBOPTIMAL_KHR) {
-        recreate_swapchain(self, window);
-    } else if (present_result != VK_SUCCESS) {
-        fatal("Failed to present swapchain image.");
-    }
-
-    self->current_frame = (current_frame + 1) % 2;
 }
 
 static void create_2d_image(VkPhysicalDevice physical_device, VkDevice device, uint32_t width, uint32_t height,
