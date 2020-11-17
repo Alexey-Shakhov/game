@@ -1279,7 +1279,6 @@ static void create_2d_image_view(VkDevice device, VkImage image, VkFormat format
         .subresourceRange.baseArrayLayer = 0,
         .subresourceRange.layerCount = 1,
     };
-
     if (vkCreateImageView(device, &create_info, NULL, image_view) != VK_SUCCESS) {
         fatal("Failed to create image views.");
     }
