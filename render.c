@@ -693,9 +693,9 @@ format_chosen:
     }
 
     VkShaderModule vertex_shader_module = create_shader_module(
-                        self->device, vertex_shader_code, vertex_shader_code_size);
+                    self->device, vertex_shader_code, vertex_shader_code_size);
     VkShaderModule fragment_shader_module = create_shader_module(
-                    self->device, fragment_shader_code, fragment_shader_code_size);
+                self->device, fragment_shader_code, fragment_shader_code_size);
 
     struct VkPipelineShaderStageCreateInfo vertex_shader_stage_info = {
         .sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
