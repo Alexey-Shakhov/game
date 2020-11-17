@@ -86,7 +86,7 @@ const char *const DEVICE_EXTENSIONS[DEVICE_EXTENSION_COUNT] = {
 };
 
 // TODO account for no multisampling support on the device
-#define SAMPLE_COUNT VK_SAMPLE_COUNT_2_BIT
+#define SAMPLE_COUNT VK_SAMPLE_COUNT_4_BIT
 
 #define VERTEX_SHADER_PATH "./shaders/vert.spv"
 #define FRAGMENT_SHADER_PATH "./shaders/frag.spv"
@@ -175,7 +175,7 @@ Render* render_init() {
         .applicationVersion = VK_MAKE_VERSION(0, 0, 1),
         .pEngineName = ENGINE_NAME,
         .engineVersion = VK_MAKE_VERSION(0, 0, 1),
-        .apiVersion = VK_API_VERSION_1_0,
+        .apiVersion = VK_API_VERSION_1_2,
     };
     uint32_t glfw_ext_count;
     const char* *glfw_extensions;
@@ -196,6 +196,7 @@ Render* render_init() {
         fatal("Failed to create instance");
     }
 
+    // CREATE SURFACE
     if (glfwCreateWindowSurface(
             self->instance, window, NULL, &self->surface) != VK_SUCCESS) {
         fatal("Failed to create surface.");
@@ -331,6 +332,7 @@ Render* render_init() {
     };
     queue_create_infos[0] = graphics_queue_create_info;
     
+    // TODO use a separate queue for presentation (IMPORTANT!)
     if (queue_count > 1) {
         VkDeviceQueueCreateInfo present_queue_create_info = {
             .sType = VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO,
@@ -341,8 +343,7 @@ Render* render_init() {
         queue_create_infos[1] = present_queue_create_info;
     }
 
-    VkPhysicalDeviceFeatures features = {
-    };
+    VkPhysicalDeviceFeatures features = {};
 
     VkDeviceCreateInfo device_create_info = {
         .sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO,
@@ -356,9 +357,7 @@ Render* render_init() {
 
     if (vkCreateDevice(
             self->physical_device, &device_create_info, NULL, &self->device) !=
-            VK_SUCCESS) {
-        fatal("Failed to create logical device.");
-    }
+            VK_SUCCESS) fatal("Failed to create logical device.");
 
     vkGetDeviceQueue(
         self->device, self->graphics_family, 0, &self->graphics_queue);
@@ -440,37 +439,36 @@ Render* render_init() {
 static void render_swapchain_dependent_init(Render* self, GLFWwindow* window)
 {
     // CREATE SWAPCHAIN
-    // Choose swap self->surface format
+    // Choose swap surface format
     uint32_t format_count;
     vkGetPhysicalDeviceSurfaceFormatsKHR(
-                                self->physical_device, self->surface, &format_count, NULL);
+                    self->physical_device, self->surface, &format_count, NULL);
     VkSurfaceFormatKHR *const formats = 
             malloc_nofail(sizeof(VkSurfaceFormatKHR) * format_count);
     vkGetPhysicalDeviceSurfaceFormatsKHR(
                 self->physical_device, self->surface, &format_count, formats);
 
-    // NOTE assumes that format_count > 0
     VkSurfaceFormatKHR format;
+    bool format_found = false;
     if (format_count == 1 && formats->format == VK_FORMAT_UNDEFINED) {
         VkSurfaceFormatKHR deflt = {
             VK_FORMAT_B8G8R8A8_UNORM,
             VK_COLOR_SPACE_SRGB_NONLINEAR_KHR
         };
         format = deflt;
-        goto format_chosen;
-    }
-
-    for (int i=0; i < format_count; i++) {
-        if (formats[i].format == VK_FORMAT_B8G8R8A8_SNORM &&
-                formats[i].colorSpace == VK_COLOR_SPACE_SRGB_NONLINEAR_KHR) {
-            format = formats[i];
-            goto format_chosen;
+        format_found = true;
+    } else {
+        for (int i=0; i < format_count; i++) {
+            if (formats[i].format == VK_FORMAT_B8G8R8A8_SNORM &&
+                    formats[i].colorSpace == VK_COLOR_SPACE_SRGB_NONLINEAR_KHR) {
+                format = formats[i];
+                format_found = true;
+                break;
+            }
         }
     }
-
     // TODO check if we can really use any format
-    format = *formats;
-format_chosen:
+    if (!format_found) format = *formats;
     mem_free(formats);
 
     // Choose present mode
@@ -482,7 +480,6 @@ format_chosen:
     vkGetPhysicalDeviceSurfacePresentModesKHR(
         self->physical_device, self->surface, &present_mode_count, present_modes);
 
-    // NOTE assumes that present_mode_count > 0
     VkPresentModeKHR present_mode = VK_PRESENT_MODE_FIFO_KHR;
     for (size_t i=0; i < present_mode_count; i++) {
         if (present_modes[i] == VK_PRESENT_MODE_MAILBOX_KHR) {
@@ -520,7 +517,7 @@ format_chosen:
         extent = actual_extent;
     }
 
-    struct VkSwapchainCreateInfoKHR create_info = {
+    struct VkSwapchainCreateInfoKHR swapchain_create_info = {
         .sType = VK_STRUCTURE_TYPE_SWAPCHAIN_CREATE_INFO_KHR,
         .surface = self->surface,
         .minImageCount = 2, // ! hard condition
@@ -545,15 +542,15 @@ format_chosen:
             self->present_family,
         };
 
-        create_info.imageSharingMode = VK_SHARING_MODE_CONCURRENT;
-        create_info.queueFamilyIndexCount = 2;
-        create_info.pQueueFamilyIndices = queue_family_indices;
+        swapchain_create_info.imageSharingMode = VK_SHARING_MODE_CONCURRENT;
+        swapchain_create_info.queueFamilyIndexCount = 2;
+        swapchain_create_info.pQueueFamilyIndices = queue_family_indices;
     } else {
-        create_info.imageSharingMode = VK_SHARING_MODE_EXCLUSIVE;
+        swapchain_create_info.imageSharingMode = VK_SHARING_MODE_EXCLUSIVE;
     }
 
     if (vkCreateSwapchainKHR(
-                self->device, &create_info, NULL, &self->swapchain) != VK_SUCCESS) {
+            self->device, &swapchain_create_info, NULL, &self->swapchain) != VK_SUCCESS) {
         fatal("Failed to create swapchain.");
     }
 
@@ -564,6 +561,7 @@ format_chosen:
     vkGetSwapchainImagesKHR(
           self->device, self->swapchain, &image_count, self->swapchain_images);
 
+    // TODO replace with create_image_view() calls
     self->swapchain_image_views = malloc_nofail(sizeof(VkImageView) * 2);
     for (uint32_t i=0; i < 2; i++) {
         VkImageViewCreateInfo create_info = {
@@ -601,7 +599,6 @@ format_chosen:
     };
 
     VkFormat depth_format = find_depth_format(self->physical_device);
-
     struct VkAttachmentDescription depth_attachment = {
         .format = depth_format,
         .samples = SAMPLE_COUNT,
@@ -628,17 +625,14 @@ format_chosen:
     struct VkAttachmentDescription attachments[attachment_count] = {
         color_attachment, depth_attachment, color_attachment_resolve,
     };
-
     struct VkAttachmentReference color_attachment_ref = {
         .attachment = 0,
         .layout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
     };
-
     struct VkAttachmentReference depth_attachment_ref = {
         .attachment = 1,
         .layout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL,
     };
-
     struct VkAttachmentReference color_attachment_resolve_ref = {
         .attachment = 2,
         .layout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
@@ -655,10 +649,12 @@ format_chosen:
     struct VkSubpassDependency dependency = {
         .srcSubpass = VK_SUBPASS_EXTERNAL,
         .dstSubpass = 0,
-        .srcStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
+        .srcStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT |
+            VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT,
         .srcAccessMask = 0,
-        .dstStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
-        .dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_READ_BIT |
+        .dstStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT |
+            VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT,
+        .dstAccessMask = VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_READ_BIT |
                          VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT,
     };
 
@@ -890,6 +886,7 @@ format_chosen:
     }
 
     // CREATE DESCRIPTOR POOL
+    // TODO make more flexible?
     enum { descriptor_type_count = 1 };
     VkDescriptorType descriptor_types[descriptor_type_count] =
         {VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER};
@@ -903,7 +900,7 @@ format_chosen:
         .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO,
         .poolSizeCount = descriptor_type_count,
         .pPoolSizes = pool_sizes,
-        .maxSets = 2,
+        .maxSets = descriptor_type_count * 2,
     };
     if (vkCreateDescriptorPool(self->device, &pool_info, NULL, &self->descriptor_pool)
             != VK_SUCCESS) {
@@ -939,8 +936,7 @@ format_chosen:
         .descriptorSetCount = 2,
         .pSetLayouts = layout_copies,
     };
-    self->descriptor_sets = malloc_nofail(
-            sizeof(VkDescriptorSet) * 2);
+    self->descriptor_sets = malloc_nofail(sizeof(VkDescriptorSet) * 2);
     if (vkAllocateDescriptorSets(self->device, &allocate_info, self->descriptor_sets)
             != VK_SUCCESS) fatal("Failed to allocate descriptor sets.");
     mem_free(layout_copies);
@@ -962,13 +958,7 @@ format_chosen:
             .descriptorCount = 1,
             .pBufferInfo = &buffer_info,
         };
-
-        vkUpdateDescriptorSets(
-                self->device,
-                1,
-                &uniform_write,
-                0,
-                NULL);
+        vkUpdateDescriptorSets(self->device, 1, &uniform_write, 0, NULL);
     }
 
     // UPLOAD PROJECTION MATRICES
@@ -1493,7 +1483,8 @@ static void upload_to_device_local_buffer(
             device,
             size,
             VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
-            VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
+            // TODO use non-coherent memory with a flush
+            VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | 
                 VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
             &staging_buffer,
             &staging_buffer_memory
