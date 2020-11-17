@@ -10,6 +10,7 @@ void mem_shutdown();
 
 #ifndef RELEASE
 void mem_check();
+void mem_inspect();
 #endif
 
 #endif

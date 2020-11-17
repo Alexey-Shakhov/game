@@ -113,7 +113,6 @@ void mem_shutdown()
 }
 
 #ifndef RELEASE
-// Proudly stolen from DOOM source code
 void mem_check()
 {
     for (Memblock* block = mainzone->link.next; ; block = block->next) {
@@ -128,5 +127,16 @@ void mem_check()
         if (!block->tag && !block->next->tag)
             fatal("MEMCHECK: two consecutive free blocks.\n");
     }
+}
+
+void mem_inspect()
+{
+    Memblock* block = mainzone->link.next;
+    printf("-----------------MEMORY REPORT START-----------------\n");
+    while (block != &mainzone->link) {
+        printf("%f\n", ((float)block->size) / 1024 / 1024);
+        block = block->next;
+    }
+    printf("------------------MEMORY REPORT END------------------\n\n");
 }
 #endif

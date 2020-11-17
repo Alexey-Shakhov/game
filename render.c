@@ -1580,6 +1580,7 @@ int main()
     render_test();
     mem_check();
     
+    mem_inspect();
     mem_shutdown();
 
     printf("%s", "Success!\n");
