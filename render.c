@@ -561,28 +561,11 @@ static void render_swapchain_dependent_init(Render* self, GLFWwindow* window)
     vkGetSwapchainImagesKHR(
           self->device, self->swapchain, &image_count, self->swapchain_images);
 
-    // TODO replace with create_image_view() calls
     self->swapchain_image_views = malloc_nofail(sizeof(VkImageView) * 2);
     for (uint32_t i=0; i < 2; i++) {
-        VkImageViewCreateInfo create_info = {
-            .sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO,
-            .image = self->swapchain_images[i],
-            .viewType = VK_IMAGE_VIEW_TYPE_2D,
-            .format = self->swapchain_format,
-            .components.r = VK_COMPONENT_SWIZZLE_IDENTITY,
-            .components.g = VK_COMPONENT_SWIZZLE_IDENTITY,
-            .components.b = VK_COMPONENT_SWIZZLE_IDENTITY,
-            .components.a = VK_COMPONENT_SWIZZLE_IDENTITY,
-            .subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
-            .subresourceRange.baseMipLevel = 0,
-            .subresourceRange.levelCount = 1,
-            .subresourceRange.baseArrayLayer = 0,
-            .subresourceRange.layerCount = 1,
-        };
-        if (vkCreateImageView(
-              self->device, &create_info, NULL, &self->swapchain_image_views[i]) != VK_SUCCESS) {
-            fatal("Failed to create image views.");
-        }
+        create_2d_image_view(self->device, self->swapchain_images[i],
+            self->swapchain_format, VK_IMAGE_ASPECT_COLOR_BIT,
+            &self->swapchain_image_views[i]);
     }
 
     // CREATE RENDER PASS
