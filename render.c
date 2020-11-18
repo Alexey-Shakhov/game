@@ -1012,7 +1012,6 @@ void render_draw_frame(Render* self, GLFWwindow* window) {
         fatal("Failed to acquire swapchain image.");
     }
 
-    // TODO extract code that doesn't change between command buffers
     vkWaitForFences(
             self->device, 1, &self->commands_executed_fences[current_frame],
             VK_TRUE, UINT64_MAX);
@@ -1094,7 +1093,6 @@ void render_draw_frame(Render* self, GLFWwindow* window) {
         .pSwapchains = &self->swapchain,
         .pImageIndices = &image_index,
     };
-
     VkResult present_result = vkQueuePresentKHR(self->present_queue, &present_info);
     if (present_result == VK_ERROR_OUT_OF_DATE_KHR ||
             present_result == VK_SUBOPTIMAL_KHR) {
@@ -1577,11 +1575,10 @@ int main()
     mem_init(MBS(24));
 
     render_test();
+
     mem_check();
-    
     mem_inspect();
     mem_shutdown();
-
     printf("%s", "Success!\n");
     return EXIT_SUCCESS;
 }
