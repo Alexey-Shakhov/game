@@ -12,6 +12,9 @@
 
 #include "render.h"
 
+#define STB_IMAGE_IMPLEMENTATION
+#include "stb_image.h"
+
 #define APP_NAME "Demo"
 #define ENGINE_NAME "None"
 
@@ -73,6 +76,9 @@ static void upload_to_device_local_buffer(
         VkQueue queue,
         VkCommandPool command_pool
 );
+static VkBuffer upload_data_to_staging_buffer(
+    VkPhysicalDevice physical_device, VkDevice device, void* data,
+    size_t size, VkDeviceMemory* staging_buffer_memory);
 
 enum { VALIDATION_ENABLED = 1 };
 
@@ -140,6 +146,11 @@ typedef struct Render {
     VkFence commands_executed_fences[2];
     VkSemaphore image_available_semaphores[2];
     VkSemaphore draw_finished_semaphores[2];
+
+    VkImage texture_image;
+    VkDeviceMemory texture_image_memory;
+    VkImageView texture_image_view;
+    VkSampler texture_sampler;
 
     size_t current_frame;
 } Render;
@@ -870,7 +881,7 @@ static void render_swapchain_dependent_init(Render* self, GLFWwindow* window)
 
     // CREATE DESCRIPTOR POOL
     // TODO make more flexible?
-    enum { descriptor_type_count = 1 };
+    enum { descriptor_type_count = 2 };
     VkDescriptorType descriptor_types[descriptor_type_count] =
         {VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER};
     VkDescriptorPoolSize* pool_sizes = malloc_nofail(
@@ -883,7 +894,7 @@ static void render_swapchain_dependent_init(Render* self, GLFWwindow* window)
         .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO,
         .poolSizeCount = descriptor_type_count,
         .pPoolSizes = pool_sizes,
-        .maxSets = descriptor_type_count * 2,
+        .maxSets = 2,
     };
     if (vkCreateDescriptorPool(self->device, &pool_info, NULL, &self->descriptor_pool)
             != VK_SUCCESS) {
@@ -976,6 +987,144 @@ static void render_swapchain_dependent_init(Render* self, GLFWwindow* window)
 
     self->current_frame = 0;
 
+    // LOAD TEXTURE
+{
+    // Load pixels
+    int tex_width, tex_height, tex_channels;
+    stbi_uc* pixels = stbi_load(
+        "stone.jpg", &tex_width, &tex_height, &tex_channels, STBI_rgb_alpha);
+    if (!pixels) fatal("Failed to load texture.");
+    uint32_t image_size = tex_width * tex_height * 4;
+
+    // Upload pixels to staging buffer
+    VkDeviceMemory texture_staging_memory;
+    VkBuffer texture_staging = upload_data_to_staging_buffer(
+        self->physical_device, self->device, pixels, image_size,
+        &texture_staging_memory);
+
+    stbi_image_free(pixels);
+
+    // Create texture image
+    create_2d_image(
+            self->physical_device, self->device, tex_width, tex_height,
+            VK_SAMPLE_COUNT_1_BIT, VK_FORMAT_R8G8B8A8_SRGB,
+            VK_IMAGE_TILING_OPTIMAL, VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
+            VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, &self->texture_image,
+            &self->texture_image_memory);
+
+{
+    // Transition image layout for upload
+    VkCommandBuffer cmdbuf = begin_one_time_command_buffer(
+            self->device, self->graphics_command_pool);
+    VkImageMemoryBarrier barrier = {
+        .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
+        .oldLayout = VK_IMAGE_LAYOUT_UNDEFINED,
+        .newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+        .srcAccessMask = 0,
+        .dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT,
+        .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+        .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+        .image = self->texture_image,
+        .subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
+        .subresourceRange.baseMipLevel = 0,
+        .subresourceRange.levelCount = 1,
+        .subresourceRange.baseArrayLayer = 0,
+        .subresourceRange.layerCount = 1,
+    };
+    vkCmdPipelineBarrier(cmdbuf, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
+            VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, NULL, 0, NULL, 1, &barrier);
+    submit_one_time_command_buffer(
+            self->device, self->graphics_queue, cmdbuf,
+            self->graphics_command_pool);
+}
+
+{
+    // Copy staging buffer to image
+    VkCommandBuffer cmdbuf = begin_one_time_command_buffer(
+            self->device, self->graphics_command_pool);
+    VkBufferImageCopy region = {
+        .bufferOffset = 0,
+        .bufferRowLength = 0,
+        .bufferImageHeight = 0,
+        .imageSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
+        .imageSubresource.mipLevel = 0,
+        .imageSubresource.baseArrayLayer = 0,
+        .imageSubresource.layerCount = 1,
+        .imageOffset = {0, 0, 0},
+        .imageExtent = {
+            tex_width,
+            tex_height,
+            1
+        },
+    };
+    vkCmdCopyBufferToImage(cmdbuf, texture_staging, self->texture_image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &region);
+    submit_one_time_command_buffer(self->device, self->graphics_queue, cmdbuf,
+            self->graphics_command_pool);
+
+    vkDestroyBuffer(self->device, texture_staging, NULL);
+    vkFreeMemory(self->device, texture_staging_memory, NULL);
+}
+{
+    // Transition image layout for shader access
+    VkCommandBuffer cmdbuf = begin_one_time_command_buffer(
+            self->device, self->graphics_command_pool);
+    VkImageMemoryBarrier barrier = {
+        .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
+        .oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+        .newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+        .srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT,
+        .dstAccessMask = VK_ACCESS_SHADER_READ_BIT,
+        .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+        .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+        .image = self->texture_image,
+        .subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
+        .subresourceRange.baseMipLevel = 0,
+        .subresourceRange.levelCount = 1,
+        .subresourceRange.baseArrayLayer = 0,
+        .subresourceRange.layerCount = 1,
+    };
+    vkCmdPipelineBarrier(cmdbuf, VK_PIPELINE_STAGE_TRANSFER_BIT,
+            VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, 0, 0, NULL, 0, NULL, 1,
+            &barrier);
+    submit_one_time_command_buffer(
+            self->device, self->graphics_queue, cmdbuf,
+            self->graphics_command_pool);
+}
+
+    create_2d_image_view(self->device, self->texture_image, VK_FORMAT_R8G8B8A8_SRGB,
+            VK_IMAGE_ASPECT_COLOR_BIT, &self->texture_image_view);
+
+    // Create texture sampler
+    VkSamplerCreateInfo texture_sampler_info = {
+        .sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO,
+        .magFilter = VK_FILTER_LINEAR,
+        .minFilter = VK_FILTER_LINEAR,
+        .addressModeU = VK_SAMPLER_ADDRESS_MODE_REPEAT,
+        .addressModeV = VK_SAMPLER_ADDRESS_MODE_REPEAT,
+        .addressModeW = VK_SAMPLER_ADDRESS_MODE_REPEAT,
+        .anisotropyEnable = VK_FALSE,
+//        .maxAnisotropy = 16.0f,
+        .borderColor = VK_BORDER_COLOR_INT_OPAQUE_BLACK,
+        .unnormalizedCoordinates = VK_FALSE,
+        .compareEnable = VK_FALSE,
+        .compareOp = VK_COMPARE_OP_ALWAYS,
+        .mipmapMode = VK_SAMPLER_MIPMAP_MODE_LINEAR,
+        .minLod = 0.0f,
+        .maxLod = 1.0,
+        .mipLodBias = 0.0f,
+    };
+
+    if (vkCreateSampler(self->device, &texture_sampler_info, NULL,
+                &self->texture_sampler) != VK_SUCCESS) {
+        fatal("Failed to create texture sampler.");
+    }
+
+    vkDestroySampler(self->device, self->texture_sampler, NULL);
+    vkDestroyImageView(self->device, self->texture_image_view, NULL);
+    vkDestroyImage(self->device, self->texture_image, NULL);
+    vkFreeMemory(self->device, self->texture_image_memory, NULL);
+}
+
     // ALLOCATE COMMAND BUFFERS
     // TODO change to one-frame command buffer
     self->command_buffers = malloc_nofail(sizeof(VkCommandBuffer) * 2); 
@@ -985,7 +1134,6 @@ static void render_swapchain_dependent_init(Render* self, GLFWwindow* window)
         .level = VK_COMMAND_BUFFER_LEVEL_PRIMARY,
         .commandBufferCount = 2,
     };
-
     if (vkAllocateCommandBuffers(self->device, &cmdbuf_allocate_info,
             self->command_buffers) != VK_SUCCESS) {
         fatal("Failed to allocate command buffers.");
@@ -1445,19 +1593,13 @@ static void copy_buffer(
     submit_one_time_command_buffer(device, queue, command_buffer, command_pool);
 }
 
-static void upload_to_device_local_buffer(
-        void* data,
-        size_t size,
-        VkBuffer destination,
-        VkPhysicalDevice physical_device,
-        VkDevice device,
-        VkQueue queue,
-        VkCommandPool command_pool
-) {
+static VkBuffer upload_data_to_staging_buffer(
+    VkPhysicalDevice physical_device, VkDevice device, void* data,
+    size_t size, VkDeviceMemory* staging_buffer_memory)
+{
     VkDeviceSize device_size = size;
 
     VkBuffer staging_buffer;
-    VkDeviceMemory staging_buffer_memory;
     create_buffer(
             physical_device,
             device,
@@ -1467,23 +1609,37 @@ static void upload_to_device_local_buffer(
             VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | 
                 VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
             &staging_buffer,
-            &staging_buffer_memory
+            staging_buffer_memory
     );
 
     void *staging_buffer_mapped;
     vkMapMemory(
-            device, staging_buffer_memory, 0, device_size, 0,
+            device, *staging_buffer_memory, 0, device_size, 0,
             &staging_buffer_mapped);
     memcpy(staging_buffer_mapped, data, size);
-    vkUnmapMemory(device, staging_buffer_memory);
+    vkUnmapMemory(device, *staging_buffer_memory);
+    return staging_buffer;
+}
 
+static void upload_to_device_local_buffer(
+        void* data,
+        size_t size,
+        VkBuffer destination,
+        VkPhysicalDevice physical_device,
+        VkDevice device,
+        VkQueue queue,
+        VkCommandPool command_pool)
+{
+    VkDeviceSize device_size = size;
+    VkDeviceMemory staging_buffer_memory;
+    VkBuffer staging_buffer = upload_data_to_staging_buffer(
+                physical_device, device, data, size, &staging_buffer_memory);
     copy_buffer(
             device,
             queue,
             command_pool,
             staging_buffer, destination, device_size
     );
-
     vkDestroyBuffer(device, staging_buffer, NULL);
     vkFreeMemory(device, staging_buffer_memory, NULL);
 }
