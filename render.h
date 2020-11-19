@@ -14,6 +14,7 @@ void render_destroy(Render* self);
 typedef struct Vertex {
     vec3 position;
     vec3 color;
+    vec2 tex_coord;
 } Vertex;
 void render_upload_map_mesh(
         Render* self, Vertex* vertices, size_t vertex_count,

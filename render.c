@@ -397,10 +397,19 @@ Render* render_init() {
         .descriptorCount = 1,
         .stageFlags = VK_SHADER_STAGE_VERTEX_BIT,
     };
+    VkDescriptorSetLayoutBinding texture_sampler_binding = {
+        .binding = 1,
+        .descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+        .descriptorCount = 1,
+        .stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT,
+    };
+    VkDescriptorSetLayoutBinding bindings[2] = {
+        uniform_binding, texture_sampler_binding,
+    };
     VkDescriptorSetLayoutCreateInfo layout_info = {
         .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO,
-        .bindingCount = 1,
-        .pBindings = &uniform_binding,
+        .bindingCount = 2,
+        .pBindings = bindings,
     };
     if (vkCreateDescriptorSetLayout(self->device, &layout_info, NULL,
             &self->descriptor_set_layout) != VK_SUCCESS) {
@@ -442,6 +451,137 @@ Render* render_init() {
                 &self->draw_finished_semaphores[i]);
         vkCreateFence(self->device, &fence_info, NULL,
                 &self->commands_executed_fences[i]);
+    }
+
+    // LOAD TEXTURE
+    // Load pixels
+    int tex_width, tex_height, tex_channels;
+    stbi_uc* pixels = stbi_load(
+        "stone.jpg", &tex_width, &tex_height, &tex_channels, STBI_rgb_alpha);
+    if (!pixels) fatal("Failed to load texture.");
+    uint32_t image_size = tex_width * tex_height * 4;
+
+    // Upload pixels to staging buffer
+    VkDeviceMemory texture_staging_memory;
+    VkBuffer texture_staging = upload_data_to_staging_buffer(
+        self->physical_device, self->device, pixels, image_size,
+        &texture_staging_memory);
+
+    stbi_image_free(pixels);
+
+    // Create texture image
+    create_2d_image(
+            self->physical_device, self->device, tex_width, tex_height,
+            VK_SAMPLE_COUNT_1_BIT, VK_FORMAT_R8G8B8A8_SRGB,
+            VK_IMAGE_TILING_OPTIMAL, VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
+            VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, &self->texture_image,
+            &self->texture_image_memory);
+
+{
+    // Transition image layout for upload
+    VkCommandBuffer cmdbuf = begin_one_time_command_buffer(
+            self->device, self->graphics_command_pool);
+    VkImageMemoryBarrier barrier = {
+        .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
+        .oldLayout = VK_IMAGE_LAYOUT_UNDEFINED,
+        .newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+        .srcAccessMask = 0,
+        .dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT,
+        .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+        .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+        .image = self->texture_image,
+        .subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
+        .subresourceRange.baseMipLevel = 0,
+        .subresourceRange.levelCount = 1,
+        .subresourceRange.baseArrayLayer = 0,
+        .subresourceRange.layerCount = 1,
+    };
+    vkCmdPipelineBarrier(cmdbuf, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
+            VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, NULL, 0, NULL, 1, &barrier);
+    submit_one_time_command_buffer(
+            self->device, self->graphics_queue, cmdbuf,
+            self->graphics_command_pool);
+}
+
+{
+    // Copy staging buffer to image
+    VkCommandBuffer cmdbuf = begin_one_time_command_buffer(
+            self->device, self->graphics_command_pool);
+    VkBufferImageCopy region = {
+        .bufferOffset = 0,
+        .bufferRowLength = 0,
+        .bufferImageHeight = 0,
+        .imageSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
+        .imageSubresource.mipLevel = 0,
+        .imageSubresource.baseArrayLayer = 0,
+        .imageSubresource.layerCount = 1,
+        .imageOffset = {0, 0, 0},
+        .imageExtent = {
+            tex_width,
+            tex_height,
+            1
+        },
+    };
+    vkCmdCopyBufferToImage(cmdbuf, texture_staging, self->texture_image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &region);
+    submit_one_time_command_buffer(self->device, self->graphics_queue, cmdbuf,
+            self->graphics_command_pool);
+
+    vkDestroyBuffer(self->device, texture_staging, NULL);
+    vkFreeMemory(self->device, texture_staging_memory, NULL);
+}
+{
+    // Transition image layout for shader access
+    VkCommandBuffer cmdbuf = begin_one_time_command_buffer(
+            self->device, self->graphics_command_pool);
+    VkImageMemoryBarrier barrier = {
+        .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
+        .oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+        .newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+        .srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT,
+        .dstAccessMask = VK_ACCESS_SHADER_READ_BIT,
+        .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+        .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+        .image = self->texture_image,
+        .subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
+        .subresourceRange.baseMipLevel = 0,
+        .subresourceRange.levelCount = 1,
+        .subresourceRange.baseArrayLayer = 0,
+        .subresourceRange.layerCount = 1,
+    };
+    vkCmdPipelineBarrier(cmdbuf, VK_PIPELINE_STAGE_TRANSFER_BIT,
+            VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, 0, 0, NULL, 0, NULL, 1,
+            &barrier);
+    submit_one_time_command_buffer(
+            self->device, self->graphics_queue, cmdbuf,
+            self->graphics_command_pool);
+}
+
+    create_2d_image_view(self->device, self->texture_image, VK_FORMAT_R8G8B8A8_SRGB,
+            VK_IMAGE_ASPECT_COLOR_BIT, &self->texture_image_view);
+
+    // Create texture sampler
+    VkSamplerCreateInfo texture_sampler_info = {
+        .sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO,
+        .magFilter = VK_FILTER_LINEAR,
+        .minFilter = VK_FILTER_LINEAR,
+        .addressModeU = VK_SAMPLER_ADDRESS_MODE_REPEAT,
+        .addressModeV = VK_SAMPLER_ADDRESS_MODE_REPEAT,
+        .addressModeW = VK_SAMPLER_ADDRESS_MODE_REPEAT,
+        .anisotropyEnable = VK_FALSE,
+//        .maxAnisotropy = 16.0f,
+        .borderColor = VK_BORDER_COLOR_INT_OPAQUE_BLACK,
+        .unnormalizedCoordinates = VK_FALSE,
+        .compareEnable = VK_FALSE,
+        .compareOp = VK_COMPARE_OP_ALWAYS,
+        .mipmapMode = VK_SAMPLER_MIPMAP_MODE_LINEAR,
+        .minLod = 0.0f,
+        .maxLod = 1.0,
+        .mipLodBias = 0.0f,
+    };
+
+    if (vkCreateSampler(self->device, &texture_sampler_info, NULL,
+                &self->texture_sampler) != VK_SUCCESS) {
+        fatal("Failed to create texture sampler.");
     }
 
     render_swapchain_dependent_init(self, window);
@@ -486,7 +626,7 @@ static void render_swapchain_dependent_init(Render* self, GLFWwindow* window)
     // Choose present mode
     uint32_t present_mode_count;
     vkGetPhysicalDeviceSurfacePresentModesKHR(
-                            self->physical_device, self->surface, &present_mode_count, NULL);
+            self->physical_device, self->surface, &present_mode_count, NULL);
     VkPresentModeKHR* present_modes =
         malloc_nofail(sizeof(VkPresentModeKHR) * present_mode_count);
     vkGetPhysicalDeviceSurfacePresentModesKHR(
@@ -712,7 +852,7 @@ static void render_swapchain_dependent_init(Render* self, GLFWwindow* window)
         .inputRate = VK_VERTEX_INPUT_RATE_VERTEX,
     };
 
-    enum { v_attr_desc_count = 2 };
+    enum { v_attr_desc_count = 3 };
     VkVertexInputAttributeDescription attribute_descriptions[v_attr_desc_count];
 
     attribute_descriptions[0].binding = 0;
@@ -724,6 +864,11 @@ static void render_swapchain_dependent_init(Render* self, GLFWwindow* window)
     attribute_descriptions[1].location = 1;
     attribute_descriptions[1].format = VK_FORMAT_R32G32B32_SFLOAT;
     attribute_descriptions[1].offset = offsetof(Vertex, color);
+
+    attribute_descriptions[2].binding = 0;
+    attribute_descriptions[2].location = 2;
+    attribute_descriptions[2].format = VK_FORMAT_R32G32_SFLOAT;
+    attribute_descriptions[2].offset = offsetof(Vertex, tex_coord);
 
     struct VkPipelineVertexInputStateCreateInfo vertex_input_info = {
         .sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO,
@@ -882,8 +1027,10 @@ static void render_swapchain_dependent_init(Render* self, GLFWwindow* window)
     // CREATE DESCRIPTOR POOL
     // TODO make more flexible?
     enum { descriptor_type_count = 2 };
-    VkDescriptorType descriptor_types[descriptor_type_count] =
-        {VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER};
+    VkDescriptorType descriptor_types[descriptor_type_count] = {
+        VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
+        VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER
+    };
     VkDescriptorPoolSize* pool_sizes = malloc_nofail(
             sizeof(VkDescriptorPoolSize) * descriptor_type_count);
     for (size_t i=0; i < descriptor_type_count; i++) {
@@ -918,43 +1065,6 @@ static void render_swapchain_dependent_init(Render* self, GLFWwindow* window)
         );
     }
 
-    // CREATE DESCRIPTOR SETS
-    VkDescriptorSetLayout* layout_copies = malloc_nofail(
-            sizeof(VkDescriptorSetLayout) * 2);
-    for (size_t i=0; i < 2; i++) {
-        layout_copies[i] = self->descriptor_set_layout;
-    }
-    VkDescriptorSetAllocateInfo desc_set_alloc_info = {
-        .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO,
-        .descriptorPool = self->descriptor_pool,
-        .descriptorSetCount = 2,
-        .pSetLayouts = layout_copies,
-    };
-    self->descriptor_sets = malloc_nofail(sizeof(VkDescriptorSet) * 2);
-    if (vkAllocateDescriptorSets(self->device, &desc_set_alloc_info, self->descriptor_sets)
-            != VK_SUCCESS) fatal("Failed to allocate descriptor sets.");
-    mem_free(layout_copies);
-
-    for (size_t i = 0; i < 2; i++) {
-        VkDescriptorBufferInfo buffer_info = {
-            .buffer = self->uniform_buffers[i],
-            .offset = 0,
-            .range = sizeof(Uniform),
-        };
-
-        // TODO replace with a loop that iterates over descriptor types?
-        VkWriteDescriptorSet uniform_write = {
-            .sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
-            .dstSet = self->descriptor_sets[i],
-            .dstBinding = 0,
-            .dstArrayElement = 0,
-            .descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
-            .descriptorCount = 1,
-            .pBufferInfo = &buffer_info,
-        };
-        vkUpdateDescriptorSets(self->device, 1, &uniform_write, 0, NULL);
-    }
-
     // UPLOAD PROJECTION MATRICES
     Uniform uniform;
     // TODO query window size
@@ -987,143 +1097,61 @@ static void render_swapchain_dependent_init(Render* self, GLFWwindow* window)
 
     self->current_frame = 0;
 
-    // LOAD TEXTURE
-{
-    // Load pixels
-    int tex_width, tex_height, tex_channels;
-    stbi_uc* pixels = stbi_load(
-        "stone.jpg", &tex_width, &tex_height, &tex_channels, STBI_rgb_alpha);
-    if (!pixels) fatal("Failed to load texture.");
-    uint32_t image_size = tex_width * tex_height * 4;
-
-    // Upload pixels to staging buffer
-    VkDeviceMemory texture_staging_memory;
-    VkBuffer texture_staging = upload_data_to_staging_buffer(
-        self->physical_device, self->device, pixels, image_size,
-        &texture_staging_memory);
-
-    stbi_image_free(pixels);
-
-    // Create texture image
-    create_2d_image(
-            self->physical_device, self->device, tex_width, tex_height,
-            VK_SAMPLE_COUNT_1_BIT, VK_FORMAT_R8G8B8A8_SRGB,
-            VK_IMAGE_TILING_OPTIMAL, VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
-            VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, &self->texture_image,
-            &self->texture_image_memory);
-
-{
-    // Transition image layout for upload
-    VkCommandBuffer cmdbuf = begin_one_time_command_buffer(
-            self->device, self->graphics_command_pool);
-    VkImageMemoryBarrier barrier = {
-        .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
-        .oldLayout = VK_IMAGE_LAYOUT_UNDEFINED,
-        .newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
-        .srcAccessMask = 0,
-        .dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT,
-        .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-        .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-        .image = self->texture_image,
-        .subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
-        .subresourceRange.baseMipLevel = 0,
-        .subresourceRange.levelCount = 1,
-        .subresourceRange.baseArrayLayer = 0,
-        .subresourceRange.layerCount = 1,
-    };
-    vkCmdPipelineBarrier(cmdbuf, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
-            VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, NULL, 0, NULL, 1, &barrier);
-    submit_one_time_command_buffer(
-            self->device, self->graphics_queue, cmdbuf,
-            self->graphics_command_pool);
-}
-
-{
-    // Copy staging buffer to image
-    VkCommandBuffer cmdbuf = begin_one_time_command_buffer(
-            self->device, self->graphics_command_pool);
-    VkBufferImageCopy region = {
-        .bufferOffset = 0,
-        .bufferRowLength = 0,
-        .bufferImageHeight = 0,
-        .imageSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
-        .imageSubresource.mipLevel = 0,
-        .imageSubresource.baseArrayLayer = 0,
-        .imageSubresource.layerCount = 1,
-        .imageOffset = {0, 0, 0},
-        .imageExtent = {
-            tex_width,
-            tex_height,
-            1
-        },
-    };
-    vkCmdCopyBufferToImage(cmdbuf, texture_staging, self->texture_image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &region);
-    submit_one_time_command_buffer(self->device, self->graphics_queue, cmdbuf,
-            self->graphics_command_pool);
-
-    vkDestroyBuffer(self->device, texture_staging, NULL);
-    vkFreeMemory(self->device, texture_staging_memory, NULL);
-}
-{
-    // Transition image layout for shader access
-    VkCommandBuffer cmdbuf = begin_one_time_command_buffer(
-            self->device, self->graphics_command_pool);
-    VkImageMemoryBarrier barrier = {
-        .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
-        .oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
-        .newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
-        .srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT,
-        .dstAccessMask = VK_ACCESS_SHADER_READ_BIT,
-        .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-        .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-        .image = self->texture_image,
-        .subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
-        .subresourceRange.baseMipLevel = 0,
-        .subresourceRange.levelCount = 1,
-        .subresourceRange.baseArrayLayer = 0,
-        .subresourceRange.layerCount = 1,
-    };
-    vkCmdPipelineBarrier(cmdbuf, VK_PIPELINE_STAGE_TRANSFER_BIT,
-            VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, 0, 0, NULL, 0, NULL, 1,
-            &barrier);
-    submit_one_time_command_buffer(
-            self->device, self->graphics_queue, cmdbuf,
-            self->graphics_command_pool);
-}
-
-    create_2d_image_view(self->device, self->texture_image, VK_FORMAT_R8G8B8A8_SRGB,
-            VK_IMAGE_ASPECT_COLOR_BIT, &self->texture_image_view);
-
-    // Create texture sampler
-    VkSamplerCreateInfo texture_sampler_info = {
-        .sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO,
-        .magFilter = VK_FILTER_LINEAR,
-        .minFilter = VK_FILTER_LINEAR,
-        .addressModeU = VK_SAMPLER_ADDRESS_MODE_REPEAT,
-        .addressModeV = VK_SAMPLER_ADDRESS_MODE_REPEAT,
-        .addressModeW = VK_SAMPLER_ADDRESS_MODE_REPEAT,
-        .anisotropyEnable = VK_FALSE,
-//        .maxAnisotropy = 16.0f,
-        .borderColor = VK_BORDER_COLOR_INT_OPAQUE_BLACK,
-        .unnormalizedCoordinates = VK_FALSE,
-        .compareEnable = VK_FALSE,
-        .compareOp = VK_COMPARE_OP_ALWAYS,
-        .mipmapMode = VK_SAMPLER_MIPMAP_MODE_LINEAR,
-        .minLod = 0.0f,
-        .maxLod = 1.0,
-        .mipLodBias = 0.0f,
-    };
-
-    if (vkCreateSampler(self->device, &texture_sampler_info, NULL,
-                &self->texture_sampler) != VK_SUCCESS) {
-        fatal("Failed to create texture sampler.");
+    // CREATE DESCRIPTOR SETS
+    VkDescriptorSetLayout* layout_copies = malloc_nofail(
+            sizeof(VkDescriptorSetLayout) * 2);
+    for (size_t i=0; i < 2; i++) {
+        layout_copies[i] = self->descriptor_set_layout;
     }
+    VkDescriptorSetAllocateInfo desc_set_alloc_info = {
+        .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO,
+        .descriptorPool = self->descriptor_pool,
+        .descriptorSetCount = 2,
+        .pSetLayouts = layout_copies,
+    };
+    self->descriptor_sets = malloc_nofail(sizeof(VkDescriptorSet) * 2);
+    if (vkAllocateDescriptorSets(self->device, &desc_set_alloc_info, self->descriptor_sets)
+            != VK_SUCCESS) fatal("Failed to allocate descriptor sets.");
+    mem_free(layout_copies);
 
-    vkDestroySampler(self->device, self->texture_sampler, NULL);
-    vkDestroyImageView(self->device, self->texture_image_view, NULL);
-    vkDestroyImage(self->device, self->texture_image, NULL);
-    vkFreeMemory(self->device, self->texture_image_memory, NULL);
-}
+    for (size_t i = 0; i < 2; i++) {
+        VkDescriptorBufferInfo buffer_info = {
+            .buffer = self->uniform_buffers[i],
+            .offset = 0,
+            .range = sizeof(Uniform),
+        };
+
+        VkWriteDescriptorSet uniform_write = {
+            .sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+            .dstSet = self->descriptor_sets[i],
+            .dstBinding = 0,
+            .dstArrayElement = 0,
+            .descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
+            .descriptorCount = 1,
+            .pBufferInfo = &buffer_info,
+        };
+
+        VkDescriptorImageInfo texture_info = {
+            .imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+            .imageView = self->texture_image_view,
+            .sampler = self->texture_sampler,
+        };
+
+        VkWriteDescriptorSet texture_write = {
+            .sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+            .dstSet = self->descriptor_sets[i],
+            .dstBinding = 1,
+            .dstArrayElement = 0,
+            .descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+            .descriptorCount = 1,
+            .pImageInfo = &texture_info,
+        };
+        VkWriteDescriptorSet descriptor_writes[2] = {
+            uniform_write, texture_write
+        };
+
+        vkUpdateDescriptorSets(self->device, 2, descriptor_writes, 0, NULL);
+    }
 
     // ALLOCATE COMMAND BUFFERS
     // TODO change to one-frame command buffer
@@ -1331,6 +1359,11 @@ void render_destroy(Render* self)
     vkDeviceWaitIdle(self->device);
     cleanup_swapchain(self);
 
+    vkDestroySampler(self->device, self->texture_sampler, NULL);
+    vkDestroyImageView(self->device, self->texture_image_view, NULL);
+    vkDestroyImage(self->device, self->texture_image, NULL);
+    vkFreeMemory(self->device, self->texture_image_memory, NULL);
+
     mem_free(self->command_buffers);
 
     vkDestroyDescriptorSetLayout(self->device, self->descriptor_set_layout, NULL);
@@ -1406,15 +1439,13 @@ static void create_2d_image(VkPhysicalDevice physical_device, VkDevice device, u
 }
 
 static void create_2d_image_view(VkDevice device, VkImage image, VkFormat format,
-        VkImageAspectFlags aspect_flags,
-        VkImageView* image_view)
+        VkImageAspectFlags aspect_flags, VkImageView* image_view)
 {
     VkImageViewCreateInfo create_info = {
         .sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO,
         .image = image,
         .viewType = VK_IMAGE_VIEW_TYPE_2D,
         .format = format,
-
         .components.r = VK_COMPONENT_SWIZZLE_IDENTITY,
         .components.g = VK_COMPONENT_SWIZZLE_IDENTITY,
         .components.b = VK_COMPONENT_SWIZZLE_IDENTITY,
@@ -1451,9 +1482,7 @@ static VkFormat find_depth_format(VkPhysicalDevice physical_device) {
             break;
         }
     }
-
     if (!found) fatal("Failed to find depth format.");
-
     return depth_format;
 }
 
@@ -1523,7 +1552,6 @@ static int find_memory_type(
 ) { 
     VkPhysicalDeviceMemoryProperties memory_properties;
     vkGetPhysicalDeviceMemoryProperties(physical_device, &memory_properties);
-
     int memory_type_index = -1;
     for (uint32_t i = 0; i < memory_properties.memoryTypeCount; i++) {
         if ((memory_requirements.memoryTypeBits & (1 << i)) &&
@@ -1533,7 +1561,6 @@ static int find_memory_type(
             break;
         }
     }
-
     return memory_type_index;
 }
 
@@ -1703,14 +1730,17 @@ void render_test()
         {
             .position = {2.0, 1.0, 10.0},
             .color = {1.0, 1.0, 1.0},
+            .tex_coord = {1.0, 0.0},
         },
         {
             .position = {1.0, 1.0, 10.0},
             .color = {1.0, 1.0, 1.0},
+            .tex_coord = {1.0, 1.0},
         },
         {
             .position = {6.0, 10.0, 10.0},
             .color = {1.0, 1.0, 1.0},
+            .tex_coord = {0.0, 0.0},
         },
     };
     uint16_t indices[3] = {
