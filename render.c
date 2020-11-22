@@ -6,6 +6,8 @@
 #define GLFW_INCLUDE_VULKAN
 #include <GLFW/glfw3.h>
 #include <cglm/cglm.h>
+#define CGLTF_IMPLEMENTATION
+#include "cgltf.h"
 
 #include "utils.h"
 #include "alloc.h"
@@ -1107,7 +1109,8 @@ void render_draw_frame(Render* self, GLFWwindow* window) {
     self->current_frame = (current_frame + 1) % 2;
 }
 
-static void load_texture(Render* self, const char* filename)
+static void load_texture(Render* self, const char* filename,
+        VkImage* image, VkImageView* view, VkDeviceMemory* memory)
 {
     // Load pixels
     int tex_width, tex_height, tex_channels;
@@ -1128,11 +1131,11 @@ static void load_texture(Render* self, const char* filename)
     create_2d_image(
             self->physical_device, self->device, tex_width, tex_height,
             VK_SAMPLE_COUNT_1_BIT, VK_FORMAT_R8G8B8A8_SRGB,
-            VK_IMAGE_TILING_OPTIMAL, VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
-            VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, &self->texture_image,
-            &self->texture_image_memory);
+            VK_IMAGE_TILING_OPTIMAL,
+            VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
+            VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, image, memory);
 
-{
+    {
     // Transition image layout for upload
     VkCommandBuffer cmdbuf = begin_one_time_command_buffer(
             self->device, self->graphics_command_pool);
@@ -1144,7 +1147,7 @@ static void load_texture(Render* self, const char* filename)
         .dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT,
         .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
         .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-        .image = self->texture_image,
+        .image = *image,
         .subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
         .subresourceRange.baseMipLevel = 0,
         .subresourceRange.levelCount = 1,
@@ -1156,9 +1159,9 @@ static void load_texture(Render* self, const char* filename)
     submit_one_time_command_buffer(
             self->device, self->graphics_queue, cmdbuf,
             self->graphics_command_pool);
-}
+    }
 
-{
+    {
     // Copy staging buffer to image
     VkCommandBuffer cmdbuf = begin_one_time_command_buffer(
             self->device, self->graphics_command_pool);
@@ -1177,14 +1180,15 @@ static void load_texture(Render* self, const char* filename)
             1
         },
     };
-    vkCmdCopyBufferToImage(cmdbuf, texture_staging, self->texture_image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &region);
+    vkCmdCopyBufferToImage(cmdbuf, texture_staging, *image,
+            VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &region);
     submit_one_time_command_buffer(self->device, self->graphics_queue, cmdbuf,
             self->graphics_command_pool);
 
     vkDestroyBuffer(self->device, texture_staging, NULL);
     vkFreeMemory(self->device, texture_staging_memory, NULL);
-}
-{
+    }
+    {
     // Transition image layout for shader access
     VkCommandBuffer cmdbuf = begin_one_time_command_buffer(
             self->device, self->graphics_command_pool);
@@ -1196,7 +1200,7 @@ static void load_texture(Render* self, const char* filename)
         .dstAccessMask = VK_ACCESS_SHADER_READ_BIT,
         .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
         .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-        .image = self->texture_image,
+        .image = *image,
         .subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
         .subresourceRange.baseMipLevel = 0,
         .subresourceRange.levelCount = 1,
@@ -1209,10 +1213,11 @@ static void load_texture(Render* self, const char* filename)
     submit_one_time_command_buffer(
             self->device, self->graphics_queue, cmdbuf,
             self->graphics_command_pool);
-}
+    }
 
-    create_2d_image_view(self->device, self->texture_image, VK_FORMAT_R8G8B8A8_SRGB,
-            VK_IMAGE_ASPECT_COLOR_BIT, &self->texture_image_view);
+    create_2d_image_view(
+            self->device, *image, VK_FORMAT_R8G8B8A8_SRGB,
+            VK_IMAGE_ASPECT_COLOR_BIT, view);
 }
 
 void render_upload_map_mesh(
@@ -1220,9 +1225,25 @@ void render_upload_map_mesh(
         uint16_t* indices, size_t index_count)
 {
     // LOAD GLTF
-    
+    cgltf_options gltf_options = {0};
+    cgltf_data* gltf_data = NULL;
+    cgltf_result gltf_result = cgltf_parse_file(
+                            &gltf_options, "cube.glb", &gltf_data);
+    if (gltf_result != cgltf_result_success) {
+        fatal("Failed to load GLTF.");
+    }
 
-    load_texture(self, "stone.jpg");
+    cgltf_scene* scene = gltf_data->scene;
+    cgltf_node** nodes = scene->nodes;
+    for (uint32_t i = 0; i < scene->nodes_count; i++) {
+        cgltf_node* node = nodes[i];
+        
+    }
+
+    cgltf_free(gltf_data);
+
+    load_texture(self, "stone.jpg", &self->texture_image,
+            &self->texture_image_view, &self->texture_image_memory);
 
     // UPLOAD PROJECTION MATRICES
     Uniform uniform;
