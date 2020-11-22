@@ -1107,44 +1107,12 @@ void render_draw_frame(Render* self, GLFWwindow* window) {
     self->current_frame = (current_frame + 1) % 2;
 }
 
-void render_upload_map_mesh(
-        Render* self, Vertex* vertices, size_t vertex_count,
-        uint16_t* indices, size_t index_count) {
-    // UPLOAD PROJECTION MATRICES
-    Uniform uniform;
-    // TODO query window size
-    mat4 view;
-    vec3 eye = {4.0, 1.0, -10.0};
-    vec3 up = {0.0, 1.0, 0.0};
-    vec3 center = {4.0, 1.0, 0.0};
-    glm_lookat(eye, center, up, view);
-
-    mat4 proj;
-    glm_perspective_default(
-            self->swapchain_extent.width / (float) self->swapchain_extent.height,
-            proj);
-    //proj[0][0] *= -1;
-    //proj[1][1] *= -1;
-
-    glm_mat4_mul(proj, view, uniform.view_proj);
-
-    for (size_t i=0; i < 2; i++) {
-        upload_to_device_local_buffer(
-                (void*) &uniform,
-                sizeof(uniform),
-                self->uniform_buffers[i],
-                self->physical_device,
-                self->device,
-                self->graphics_queue,
-                self->graphics_command_pool
-        );
-    }
-
-    // LOAD TEXTURE
+static void load_texture(Render* self, const char* filename)
+{
     // Load pixels
     int tex_width, tex_height, tex_channels;
     stbi_uc* pixels = stbi_load(
-        "stone.jpg", &tex_width, &tex_height, &tex_channels, STBI_rgb_alpha);
+        filename, &tex_width, &tex_height, &tex_channels, STBI_rgb_alpha);
     if (!pixels) fatal("Failed to load texture.");
     uint32_t image_size = tex_width * tex_height * 4;
 
@@ -1245,6 +1213,46 @@ void render_upload_map_mesh(
 
     create_2d_image_view(self->device, self->texture_image, VK_FORMAT_R8G8B8A8_SRGB,
             VK_IMAGE_ASPECT_COLOR_BIT, &self->texture_image_view);
+}
+
+void render_upload_map_mesh(
+        Render* self, Vertex* vertices, size_t vertex_count,
+        uint16_t* indices, size_t index_count)
+{
+    // LOAD GLTF
+    
+
+    load_texture(self, "stone.jpg");
+
+    // UPLOAD PROJECTION MATRICES
+    Uniform uniform;
+    // TODO query window size
+    mat4 view;
+    vec3 eye = {4.0, 1.0, -10.0};
+    vec3 up = {0.0, 1.0, 0.0};
+    vec3 center = {4.0, 1.0, 0.0};
+    glm_lookat(eye, center, up, view);
+
+    mat4 proj;
+    glm_perspective_default(
+            self->swapchain_extent.width / (float) self->swapchain_extent.height,
+            proj);
+    //proj[0][0] *= -1;
+    //proj[1][1] *= -1;
+
+    glm_mat4_mul(proj, view, uniform.view_proj);
+
+    for (size_t i=0; i < 2; i++) {
+        upload_to_device_local_buffer(
+                (void*) &uniform,
+                sizeof(uniform),
+                self->uniform_buffers[i],
+                self->physical_device,
+                self->device,
+                self->graphics_queue,
+                self->graphics_command_pool
+        );
+    }
 
     self->vertex_buffer = device_local_buffer_from_data(
             (void*) vertices,
