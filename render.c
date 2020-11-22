@@ -354,7 +354,9 @@ Render* render_init() {
         queue_create_infos[1] = present_queue_create_info;
     }
 
-    VkPhysicalDeviceFeatures features = {};
+    VkPhysicalDeviceFeatures features = {
+        .samplerAnisotropy = VK_TRUE,
+    };
 
     VkDeviceCreateInfo device_create_info = {
         .sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO,
@@ -567,8 +569,8 @@ Render* render_init() {
         .addressModeU = VK_SAMPLER_ADDRESS_MODE_REPEAT,
         .addressModeV = VK_SAMPLER_ADDRESS_MODE_REPEAT,
         .addressModeW = VK_SAMPLER_ADDRESS_MODE_REPEAT,
-        .anisotropyEnable = VK_FALSE,
-//        .maxAnisotropy = 16.0f,
+        .anisotropyEnable = VK_TRUE,
+        .maxAnisotropy = 16.0f,
         .borderColor = VK_BORDER_COLOR_INT_OPAQUE_BLACK,
         .unnormalizedCoordinates = VK_FALSE,
         .compareEnable = VK_FALSE,
