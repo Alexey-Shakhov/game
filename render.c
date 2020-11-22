@@ -20,6 +20,9 @@
 #define APP_NAME "Demo"
 #define ENGINE_NAME "None"
 
+#define FRAMES_IN_FLIGHT 2
+#define SETS_PER_FRAME 2
+
 typedef struct Uniform {
     mat4 view_proj;
 } Uniform;
@@ -62,12 +65,6 @@ static VkBuffer device_local_buffer_from_data(
         VkQueue queue,
         VkCommandPool command_pool,
         VkDeviceMemory *o_memory
-);
-static VkDescriptorSet* create_descriptor_sets(
-        VkDevice device,
-        VkDescriptorPool descriptor_pool,
-        VkDescriptorSetLayout descriptor_set_layout,
-        VkBuffer* uniform_buffers
 );
 static void upload_to_device_local_buffer(
         void* data,
@@ -112,10 +109,11 @@ typedef struct Render {
     VkSwapchainKHR swapchain;
     VkFormat swapchain_format;
     VkExtent2D swapchain_extent;
-    VkImage* swapchain_images;
-    VkImageView* swapchain_image_views;
+    VkImage swapchain_images[FRAMES_IN_FLIGHT];
+    VkImageView swapchain_image_views[FRAMES_IN_FLIGHT];
     VkRenderPass render_pass;
-    VkDescriptorSetLayout descriptor_set_layout;
+    VkDescriptorSetLayout view_proj_set_layout;
+    VkDescriptorSetLayout texture_set_layout;
     VkPipelineLayout graphics_pipeline_layout;
     VkPipeline graphics_pipeline;
     VkCommandPool graphics_command_pool;
@@ -128,7 +126,7 @@ typedef struct Render {
     VkImageView depth_image_view;
     VkDeviceMemory depth_image_memory;
 
-    VkFramebuffer* framebuffers;
+    VkFramebuffer framebuffers[FRAMES_IN_FLIGHT];
 
     VkDescriptorPool descriptor_pool;
 
@@ -138,16 +136,17 @@ typedef struct Render {
     VkBuffer index_buffer;
     VkDeviceMemory index_buffer_memory;
 
-    VkBuffer* uniform_buffers;
-    VkDeviceMemory* uniform_buffers_memories;
+    VkBuffer view_proj_buffers[FRAMES_IN_FLIGHT];
+    VkDeviceMemory view_proj_buffers_memories[FRAMES_IN_FLIGHT];
 
-    VkDescriptorSet* descriptor_sets;
+    VkDescriptorSet view_proj_sets[FRAMES_IN_FLIGHT];
+    VkDescriptorSet texture_sets[FRAMES_IN_FLIGHT];
 
-    VkCommandBuffer* command_buffers;
+    VkCommandBuffer command_buffers[FRAMES_IN_FLIGHT];
 
-    VkFence commands_executed_fences[2];
-    VkSemaphore image_available_semaphores[2];
-    VkSemaphore draw_finished_semaphores[2];
+    VkFence commands_executed_fences[FRAMES_IN_FLIGHT];
+    VkSemaphore image_available_semaphores[FRAMES_IN_FLIGHT];
+    VkSemaphore draw_finished_semaphores[FRAMES_IN_FLIGHT];
 
     VkImage texture_image;
     VkDeviceMemory texture_image_memory;
@@ -420,39 +419,50 @@ Render* render_init() {
     }
 
     // CREATE DESCRIPTOR SET LAYOUT AND PIPELINE LAYOUT
-    VkDescriptorSetLayoutBinding uniform_binding = {
+    VkDescriptorSetLayoutBinding view_proj_binding = {
         .binding = 0,
         .descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
         .descriptorCount = 1,
         .stageFlags = VK_SHADER_STAGE_VERTEX_BIT,
     };
+    VkDescriptorSetLayoutCreateInfo view_proj_set_info = {
+        .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO,
+        .bindingCount = 1,
+        .pBindings = &view_proj_binding,
+    };
+    if (vkCreateDescriptorSetLayout(self->device, &view_proj_set_info, NULL,
+            &self->view_proj_set_layout) != VK_SUCCESS) {
+        fatal("Failed to create view-projection descriptor set layout.");
+    }
+
     VkDescriptorSetLayoutBinding texture_sampler_binding = {
-        .binding = 1,
+        .binding = 0,
         .descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
         .descriptorCount = 1,
         .stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT,
     };
-    VkDescriptorSetLayoutBinding bindings[2] = {
-        uniform_binding, texture_sampler_binding,
-    };
-    VkDescriptorSetLayoutCreateInfo layout_info = {
+    VkDescriptorSetLayoutCreateInfo texture_set_info = {
         .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO,
-        .bindingCount = 2,
-        .pBindings = bindings,
+        .bindingCount = 1,
+        .pBindings = &texture_sampler_binding,
     };
-    if (vkCreateDescriptorSetLayout(self->device, &layout_info, NULL,
-            &self->descriptor_set_layout) != VK_SUCCESS) {
-        fatal("Failed to create descriptor set layout.");
+    if (vkCreateDescriptorSetLayout(self->device, &texture_set_info, NULL,
+            &self->texture_set_layout) != VK_SUCCESS) {
+        fatal("Failed to create texture descriptor set layout.");
     }
+
     VkPushConstantRange push_constant_range = {
         .stageFlags = VK_SHADER_STAGE_VERTEX_BIT,
         .offset = 0,
         .size = sizeof(PushConstants),
     };
+    VkDescriptorSetLayout set_layouts[2] = {
+        self->view_proj_set_layout, self->texture_set_layout,
+    };
     const VkPipelineLayoutCreateInfo pipeline_layout_info = {
         .sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO,
-        .setLayoutCount = 1,
-        .pSetLayouts = &self->descriptor_set_layout,
+        .setLayoutCount = 2,
+        .pSetLayouts = set_layouts,
         .pushConstantRangeCount = 1,
         .pPushConstantRanges = &push_constant_range,
     };
@@ -473,7 +483,7 @@ Render* render_init() {
         .sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO,
         .flags = VK_FENCE_CREATE_SIGNALED_BIT,
     };
-    for (size_t i = 0; i < 2; i++) {
+    for (size_t i = 0; i < FRAMES_IN_FLIGHT; i++) {
         vkCreateSemaphore(self->device, &semaphore_info, NULL,
                 &self->image_available_semaphores[i]);
         vkCreateSemaphore(self->device, &semaphore_info, NULL,
@@ -569,7 +579,7 @@ static void render_swapchain_dependent_init(Render* self, GLFWwindow* window)
     struct VkSwapchainCreateInfoKHR swapchain_create_info = {
         .sType = VK_STRUCTURE_TYPE_SWAPCHAIN_CREATE_INFO_KHR,
         .surface = self->surface,
-        .minImageCount = 2, // ! hard condition
+        .minImageCount = FRAMES_IN_FLIGHT, // ! hard condition
         .imageFormat = format.format,
         .imageColorSpace = format.colorSpace,
         .imageExtent = extent,
@@ -605,13 +615,11 @@ static void render_swapchain_dependent_init(Render* self, GLFWwindow* window)
 
     uint32_t image_count;
     vkGetSwapchainImagesKHR(self->device, self->swapchain, &image_count, NULL);
-    self->swapchain_images = malloc_nofail(sizeof(VkImage) * (image_count));
-    DBASSERT(image_count == 2);
+    DBASSERT(image_count == FRAMES_IN_FLIGHT);
     vkGetSwapchainImagesKHR(
           self->device, self->swapchain, &image_count, self->swapchain_images);
 
-    self->swapchain_image_views = malloc_nofail(sizeof(VkImageView) * 2);
-    for (uint32_t i=0; i < 2; i++) {
+    for (uint32_t i=0; i < FRAMES_IN_FLIGHT; i++) {
         create_2d_image_view(self->device, self->swapchain_images[i],
             self->swapchain_format, VK_IMAGE_ASPECT_COLOR_BIT,
             &self->swapchain_image_views[i]);
@@ -897,8 +905,7 @@ static void render_swapchain_dependent_init(Render* self, GLFWwindow* window)
             &self->depth_image_view);
 
     // CREATE FRAMEBUFFERS
-    self->framebuffers = malloc_nofail(sizeof(VkFramebuffer) * 2);
-    for (size_t i = 0; i < 2; ++i) {
+    for (size_t i = 0; i < FRAMES_IN_FLIGHT; ++i) {
         enum { attachment_count = 3 };
         VkImageView attachments[attachment_count] = {
             self->color_image_view,
@@ -923,7 +930,6 @@ static void render_swapchain_dependent_init(Render* self, GLFWwindow* window)
     }
 
     // CREATE DESCRIPTOR POOL
-    // TODO make more flexible?
     enum { descriptor_type_count = 2 };
     VkDescriptorType descriptor_types[descriptor_type_count] = {
         VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
@@ -933,24 +939,23 @@ static void render_swapchain_dependent_init(Render* self, GLFWwindow* window)
             sizeof(VkDescriptorPoolSize) * descriptor_type_count);
     for (size_t i=0; i < descriptor_type_count; i++) {
         pool_sizes[i].type = descriptor_types[i];
-        pool_sizes[i].descriptorCount = 2;
+        pool_sizes[i].descriptorCount = FRAMES_IN_FLIGHT;
     }
     VkDescriptorPoolCreateInfo pool_info = {
         .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO,
         .poolSizeCount = descriptor_type_count,
         .pPoolSizes = pool_sizes,
-        .maxSets = 2,
+        .maxSets = FRAMES_IN_FLIGHT * SETS_PER_FRAME,
     };
-    if (vkCreateDescriptorPool(self->device, &pool_info, NULL, &self->descriptor_pool)
+    if (vkCreateDescriptorPool(
+            self->device, &pool_info, NULL, &self->descriptor_pool)
             != VK_SUCCESS) {
         fatal("Failed to create descriptor pool.");
     }
     mem_free(pool_sizes);
 
     // CREATE UNIFORM BUFFERS
-    self->uniform_buffers = malloc_nofail(sizeof(VkBuffer) * 2);
-    self->uniform_buffers_memories = malloc_nofail(sizeof(VkDeviceMemory) * 2);
-    for (uint32_t i=0; i < 2; i++) {
+    for (uint32_t i=0; i < FRAMES_IN_FLIGHT; i++) {
         create_buffer(
                 self->physical_device,
                 self->device,
@@ -958,33 +963,41 @@ static void render_swapchain_dependent_init(Render* self, GLFWwindow* window)
                 VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT |
                         VK_BUFFER_USAGE_TRANSFER_DST_BIT,
                 VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
-                &self->uniform_buffers[i],
-                &self->uniform_buffers_memories[i]
+                &self->view_proj_buffers[i],
+                &self->view_proj_buffers_memories[i]
         );
     }
 
     self->current_frame = 0;
 
     // CREATE DESCRIPTOR SETS
-    VkDescriptorSetLayout* layout_copies = malloc_nofail(
-            sizeof(VkDescriptorSetLayout) * 2);
-    for (size_t i=0; i < 2; i++) {
-        layout_copies[i] = self->descriptor_set_layout;
+    VkDescriptorSetLayout layout_copies[FRAMES_IN_FLIGHT];
+    for (size_t i=0; i < FRAMES_IN_FLIGHT; i++) {
+        layout_copies[i] = self->view_proj_set_layout;
     }
     VkDescriptorSetAllocateInfo desc_set_alloc_info = {
         .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO,
         .descriptorPool = self->descriptor_pool,
-        .descriptorSetCount = 2,
+        .descriptorSetCount = FRAMES_IN_FLIGHT,
         .pSetLayouts = layout_copies,
     };
-    self->descriptor_sets = malloc_nofail(sizeof(VkDescriptorSet) * 2);
-    if (vkAllocateDescriptorSets(self->device, &desc_set_alloc_info, self->descriptor_sets)
-            != VK_SUCCESS) fatal("Failed to allocate descriptor sets.");
-    mem_free(layout_copies);
+    if (vkAllocateDescriptorSets(
+            self->device, &desc_set_alloc_info, self->view_proj_sets
+            ) != VK_SUCCESS) {
+        fatal("Failed to allocate descriptor sets.");
+    }
+
+    for (size_t i=0; i < FRAMES_IN_FLIGHT; i++) {
+        layout_copies[i] = self->texture_set_layout;
+    }
+    if (vkAllocateDescriptorSets(
+            self->device, &desc_set_alloc_info, self->texture_sets
+            ) != VK_SUCCESS) {
+        fatal("Failed to allocate descriptor sets.");
+    }
 
     // ALLOCATE COMMAND BUFFERS
     // TODO change to one-frame command buffer
-    self->command_buffers = malloc_nofail(sizeof(VkCommandBuffer) * 2); 
     VkCommandBufferAllocateInfo cmdbuf_allocate_info = {
         .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO,
         .commandPool = self->graphics_command_pool,
@@ -1057,13 +1070,19 @@ void render_draw_frame(Render* self, GLFWwindow* window) {
             VK_PIPELINE_BIND_POINT_GRAPHICS, self->graphics_pipeline);
 
     VkDeviceSize offset = 0;
-    vkCmdBindVertexBuffers(self->command_buffers[current_frame], 0, 1, &self->vertex_buffer,
-            &offset);
-    vkCmdBindIndexBuffer(self->command_buffers[current_frame], self->index_buffer, 0,
+    vkCmdBindVertexBuffers(self->command_buffers[current_frame], 0, 1,
+            &self->vertex_buffer, &offset);
+    vkCmdBindIndexBuffer(
+            self->command_buffers[current_frame], self->index_buffer, 0,
             VK_INDEX_TYPE_UINT16);
+
     vkCmdBindDescriptorSets(self->command_buffers[current_frame],
-            VK_PIPELINE_BIND_POINT_GRAPHICS, self->graphics_pipeline_layout, 0, 1,
-            &self->descriptor_sets[current_frame], 0, NULL);
+            VK_PIPELINE_BIND_POINT_GRAPHICS, self->graphics_pipeline_layout,
+            0, 1, &self->view_proj_sets[current_frame], 0, NULL);
+    vkCmdBindDescriptorSets(self->command_buffers[current_frame],
+            VK_PIPELINE_BIND_POINT_GRAPHICS, self->graphics_pipeline_layout,
+            1, 1,&self->texture_sets[current_frame], 0, NULL);
+
     vkCmdDrawIndexed(self->command_buffers[current_frame], 3, 1, 0, 0, 0);
     vkCmdEndRenderPass(self->command_buffers[current_frame]);
 
@@ -1267,7 +1286,7 @@ void render_upload_map_mesh(
         upload_to_device_local_buffer(
                 (void*) &uniform,
                 sizeof(uniform),
-                self->uniform_buffers[i],
+                self->view_proj_buffers[i],
                 self->physical_device,
                 self->device,
                 self->graphics_queue,
@@ -1297,16 +1316,16 @@ void render_upload_map_mesh(
             &self->index_buffer_memory
     );
 
-    for (size_t i = 0; i < 2; i++) {
+    for (size_t i = 0; i < FRAMES_IN_FLIGHT; i++) {
         VkDescriptorBufferInfo buffer_info = {
-            .buffer = self->uniform_buffers[i],
+            .buffer = self->view_proj_buffers[i],
             .offset = 0,
             .range = sizeof(Uniform),
         };
 
         VkWriteDescriptorSet uniform_write = {
             .sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
-            .dstSet = self->descriptor_sets[i],
+            .dstSet = self->view_proj_sets[i],
             .dstBinding = 0,
             .dstArrayElement = 0,
             .descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
@@ -1322,8 +1341,8 @@ void render_upload_map_mesh(
 
         VkWriteDescriptorSet texture_write = {
             .sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
-            .dstSet = self->descriptor_sets[i],
-            .dstBinding = 1,
+            .dstSet = self->texture_sets[i],
+            .dstBinding = 0,
             .dstArrayElement = 0,
             .descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
             .descriptorCount = 1,
@@ -1339,10 +1358,9 @@ void render_upload_map_mesh(
 
 static void cleanup_swapchain(Render* self)
 {
-    mem_free(self->descriptor_sets);
     vkDestroyDescriptorPool(self->device, self->descriptor_pool, NULL);
 
-    for (size_t i=0; i < 2; i++) {
+    for (size_t i=0; i < FRAMES_IN_FLIGHT; i++) {
         vkDestroySemaphore(
                 self->device, self->image_available_semaphores[i], NULL);
         vkDestroySemaphore(
@@ -1350,10 +1368,9 @@ static void cleanup_swapchain(Render* self)
         vkDestroyFence(self->device, self->commands_executed_fences[i], NULL);
     }
 
-    for (size_t i=0; i < 2; i++) {
+    for (size_t i=0; i < FRAMES_IN_FLIGHT; i++) {
         vkDestroyFramebuffer(self->device, self->framebuffers[i], NULL);
     }
-    mem_free(self->framebuffers);
     
     vkDestroyImageView(self->device, self->depth_image_view, NULL);
     vkDestroyImage(self->device, self->depth_image, NULL);
@@ -1368,19 +1385,15 @@ static void cleanup_swapchain(Render* self)
 
     vkDestroyRenderPass(self->device, self->render_pass, NULL);
 
-    for (uint32_t i=0; i < 2; i++) {
+    for (uint32_t i=0; i < FRAMES_IN_FLIGHT; i++) {
         vkDestroyImageView(self->device, self->swapchain_image_views[i], NULL);
     }
 
-    mem_free(self->swapchain_image_views);
-    mem_free(self->swapchain_images);
 
-    for (size_t i=0; i < 2; i++) {
-        vkDestroyBuffer(self->device, self->uniform_buffers[i], NULL);
-        vkFreeMemory(self->device, self->uniform_buffers_memories[i], NULL);
+    for (size_t i=0; i < FRAMES_IN_FLIGHT; i++) {
+        vkDestroyBuffer(self->device, self->view_proj_buffers[i], NULL);
+        vkFreeMemory(self->device, self->view_proj_buffers_memories[i], NULL);
     }
-    mem_free(self->uniform_buffers);
-    mem_free(self->uniform_buffers_memories);
 
     vkDestroySwapchainKHR(self->device, self->swapchain, NULL);
 }
@@ -1395,9 +1408,9 @@ void render_destroy(Render* self)
     vkDestroyImage(self->device, self->texture_image, NULL);
     vkFreeMemory(self->device, self->texture_image_memory, NULL);
 
-    mem_free(self->command_buffers);
 
-    vkDestroyDescriptorSetLayout(self->device, self->descriptor_set_layout, NULL);
+    vkDestroyDescriptorSetLayout(self->device, self->view_proj_set_layout, NULL);
+    vkDestroyDescriptorSetLayout(self->device, self->texture_set_layout, NULL);
 
     if (self->index_buffer != VK_NULL_HANDLE) {
         vkDestroyBuffer(self->device, self->index_buffer, NULL);
