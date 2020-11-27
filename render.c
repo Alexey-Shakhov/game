@@ -5,6 +5,7 @@
 #include <limits.h>
 #define GLFW_INCLUDE_VULKAN
 #include <GLFW/glfw3.h>
+#define CGLM_DEFINE_PRINTS
 #include <cglm/cglm.h>
 #define CGLTF_IMPLEMENTATION
 #include "cgltf.h"
@@ -46,6 +47,8 @@ typedef struct Node {
     mat4 transform;
     Mesh* mesh;
 } Node;
+static Node* g_nodes;
+static size_t g_nodes_count;
 
 static VkImage* g_texture_images;
 static VkDeviceMemory* g_texture_image_memories;
@@ -1402,6 +1405,48 @@ void render_upload_map_mesh(Render* self)
     }
     
     // Load nodes
+    cgltf_node* gltf_nodes = gltf_data->nodes;
+    g_nodes_count = gltf_data->nodes_count;
+    g_nodes = malloc_nofail(sizeof(Node) * g_nodes_count);
+    for (size_t n=0; n < g_nodes_count; n++) {
+        Node* node = &g_nodes[n];
+        cgltf_node* gltf_node = &gltf_nodes[n];
+
+        mat4 transform = GLM_MAT4_IDENTITY_INIT;
+        DBASSERT(!gltf_node->has_matrix);
+        if (gltf_node->has_scale) glm_scale(transform, gltf_node->scale);
+        if (gltf_node->has_rotation) {
+            versor quat;
+            memcpy(quat, gltf_node->rotation, sizeof(vec4));
+            glm_quat_rotate(transform, quat, transform);
+        }
+        if (gltf_node->has_translation) {
+            glm_translate(transform, gltf_node->translation);
+        }
+        memcpy(node->transform, transform, sizeof(mat4));
+
+        node->mesh = NULL;
+        if (gltf_node->mesh) {
+            size_t mesh_index = (size_t) (((char*) gltf_node->mesh -
+                        (char*) gltf_data->meshes) / sizeof(cgltf_mesh));
+            node->mesh = &g_meshes[mesh_index];
+        }
+
+        node->parent = NULL;
+        if (gltf_node->parent) {
+            size_t parent_index = (size_t) (((char*) gltf_node->parent -
+                        (char*) gltf_nodes) / sizeof(cgltf_node));
+            node->parent = &g_nodes[parent_index];
+        }
+
+        node->children_count = gltf_node->children_count;
+        node->children = malloc_nofail(sizeof(Node*) * node->children_count);
+        for (size_t c=0; c < gltf_node->children_count; c++) {
+            size_t child_index = (size_t) (((char*) gltf_node->children[c] -
+                        (char*) gltf_data->nodes) / sizeof(cgltf_node));
+            node->children[c] = &g_nodes[child_index];    
+        }
+    }
 
     self->vertex_buffer = device_local_buffer_from_data(
             (void*) vertices,
@@ -1419,7 +1464,6 @@ void render_upload_map_mesh(Render* self)
             VK_BUFFER_USAGE_INDEX_BUFFER_BIT,
             self->physical_device,
             self->device,
-
             self->graphics_queue,
             self->graphics_command_pool,
             &self->index_buffer_memory
@@ -1544,6 +1588,8 @@ static void cleanup_swapchain(Render* self)
 
 void render_destroy(Render* self)
 {
+    for (size_t i=0; i < g_nodes_count; i++) mem_free(g_nodes[i].children);
+    mem_free(g_nodes);
     for (size_t i=0; i < g_meshes_count; i++) {
         mem_free(g_meshes[i].primitives);
     }
