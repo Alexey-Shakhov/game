@@ -1266,9 +1266,7 @@ static void load_texture(Render* self, void* buffer, size_t len,
             VK_IMAGE_ASPECT_COLOR_BIT, view);
 }
 
-void render_upload_map_mesh(
-        Render* self, Vertex* oldvs, size_t oldvcount,
-        uint16_t* oldis, size_t oldicount)
+void render_upload_map_mesh(Render* self)
 {
     // LOAD GLTF
     cgltf_options gltf_options = {0};
@@ -1402,28 +1400,32 @@ void render_upload_map_mesh(
             index_offset += count;
         }
     }
-
-    printf("Vertex buffer:\n");
-    for (int i=0; i < vertex_count; i++) {
-        printf("x: %f, y: %f, z: %f\n", vertices[i].position[0], vertices[i].position[1], vertices[i].position[2]);
-    }
-    printf("Index buffer:\n");
-    for (int i=0; i < index_count; i++) {
-        printf("%d\n", indices[i]);
-    }
-    printf("Primitives:\n");
-    for (int i=0; i < g_meshes_count; i++) {
-        for (int j=0; j < g_meshes[i].primitives_count; j++) {
-            Primitive* p = &g_meshes[i].primitives[j];
-            printf("vertex_off: %d, index_off: %d, index_count: %d", p->vertex_offset, p->index_offset, p->index_count);
-        }
-    }
     
+    // Load nodes
 
-    for (size_t i=0; i < g_meshes_count; i++) {
-        mem_free(g_meshes[i].primitives);
-    }
-    mem_free(g_meshes);
+    self->vertex_buffer = device_local_buffer_from_data(
+            (void*) vertices,
+            sizeof(Vertex) * vertex_count,
+            VK_BUFFER_USAGE_VERTEX_BUFFER_BIT,
+            self->physical_device,
+            self->device,
+            self->graphics_queue,
+            self->graphics_command_pool,
+            &self->vertex_buffer_memory
+    );
+    self->index_buffer = device_local_buffer_from_data(
+            (void*) indices,
+            sizeof(uint16_t) * index_count,
+            VK_BUFFER_USAGE_INDEX_BUFFER_BIT,
+            self->physical_device,
+            self->device,
+
+            self->graphics_queue,
+            self->graphics_command_pool,
+            &self->index_buffer_memory
+    );
+    mem_free(vertices);
+    mem_free(indices);
 
     cgltf_free(gltf_data);
 
@@ -1457,27 +1459,6 @@ void render_upload_map_mesh(
         );
     }
 
-    self->vertex_buffer = device_local_buffer_from_data(
-            (void*) oldvs,
-            sizeof(Vertex) * oldvcount,
-            VK_BUFFER_USAGE_VERTEX_BUFFER_BIT,
-            self->physical_device,
-            self->device,
-            self->graphics_queue,
-            self->graphics_command_pool,
-            &self->vertex_buffer_memory
-    );
-    self->index_buffer = device_local_buffer_from_data(
-            (void*) oldis,
-            sizeof(uint16_t) * oldicount,
-            VK_BUFFER_USAGE_INDEX_BUFFER_BIT,
-            self->physical_device,
-            self->device,
-
-            self->graphics_queue,
-            self->graphics_command_pool,
-            &self->index_buffer_memory
-    );
 
     for (size_t i = 0; i < FRAMES_IN_FLIGHT; i++) {
         VkDescriptorBufferInfo buffer_info = {
@@ -1563,6 +1544,11 @@ static void cleanup_swapchain(Render* self)
 
 void render_destroy(Render* self)
 {
+    for (size_t i=0; i < g_meshes_count; i++) {
+        mem_free(g_meshes[i].primitives);
+    }
+    mem_free(g_meshes);
+
     vkDeviceWaitIdle(self->device);
     cleanup_swapchain(self);
 
@@ -1937,27 +1923,7 @@ void render_test()
 {
     Render* render = render_init();
 
-    Vertex vertices[3] = {
-        {
-            .position = {6.0, 1.0, 10.0},
-            .color = {1.0, 1.0, 1.0},
-            .tex_coord = {1.0, 0.0},
-        },
-        {
-            .position = {3.0, 1.0, 10.0},
-            .color = {1.0, 1.0, 1.0},
-            .tex_coord = {1.0, 1.0},
-        },
-        {
-            .position = {3.0, 2.0, 10.0},
-            .color = {1.0, 1.0, 1.0},
-            .tex_coord = {0.0, 0.0},
-        },
-    };
-    uint16_t indices[3] = {
-        0, 1, 2
-    };
-    render_upload_map_mesh(render, vertices, 3, indices, 3);
+    render_upload_map_mesh(render);
 
     while (!glfwWindowShouldClose(render->window)) {
         glfwPollEvents();
