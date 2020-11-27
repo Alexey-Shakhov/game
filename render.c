@@ -23,6 +23,36 @@
 #define FRAMES_IN_FLIGHT 2
 #define SETS_PER_FRAME 2
 
+// Scene structs
+typedef struct Primitive {
+    VkImageView texture;
+    uint32_t vertex_offset;
+    uint32_t index_offset;
+    uint32_t index_count;
+} Primitive;
+
+typedef struct Mesh {
+    Primitive* primitives;
+    uint32_t primitives_count;
+} Mesh;
+static Mesh* g_meshes;
+static size_t g_meshes_count;
+
+typedef struct Node Node;
+typedef struct Node {
+    Node* parent;
+    Node** children;
+    uint32_t children_count;
+    mat4 transform;
+    Mesh* mesh;
+} Node;
+
+static VkImage* g_texture_images;
+static VkDeviceMemory* g_texture_image_memories;
+static VkImageView* g_texture_image_views;
+static size_t g_texture_count;
+
+
 typedef struct Uniform {
     mat4 view_proj;
 } Uniform;
@@ -139,6 +169,8 @@ typedef struct Render {
     VkBuffer view_proj_buffers[FRAMES_IN_FLIGHT];
     VkDeviceMemory view_proj_buffers_memories[FRAMES_IN_FLIGHT];
 
+    VkSampler texture_sampler;
+
     VkDescriptorSet view_proj_sets[FRAMES_IN_FLIGHT];
     VkDescriptorSet texture_sets[FRAMES_IN_FLIGHT];
 
@@ -147,11 +179,6 @@ typedef struct Render {
     VkFence commands_executed_fences[FRAMES_IN_FLIGHT];
     VkSemaphore image_available_semaphores[FRAMES_IN_FLIGHT];
     VkSemaphore draw_finished_semaphores[FRAMES_IN_FLIGHT];
-
-    VkImage texture_image;
-    VkDeviceMemory texture_image_memory;
-    VkImageView texture_image_view;
-    VkSampler texture_sampler;
 
     size_t current_frame;
 } Render;
@@ -1128,13 +1155,13 @@ void render_draw_frame(Render* self, GLFWwindow* window) {
     self->current_frame = (current_frame + 1) % 2;
 }
 
-static void load_texture(Render* self, const char* filename,
+static void load_texture(Render* self, void* buffer, size_t len,
         VkImage* image, VkImageView* view, VkDeviceMemory* memory)
 {
     // Load pixels
     int tex_width, tex_height, tex_channels;
-    stbi_uc* pixels = stbi_load(
-        filename, &tex_width, &tex_height, &tex_channels, STBI_rgb_alpha);
+    stbi_uc* pixels = stbi_load_from_memory(
+        buffer, len, &tex_width, &tex_height, &tex_channels, STBI_rgb_alpha);
     if (!pixels) fatal("Failed to load texture.");
     uint32_t image_size = tex_width * tex_height * 4;
 
@@ -1240,29 +1267,165 @@ static void load_texture(Render* self, const char* filename,
 }
 
 void render_upload_map_mesh(
-        Render* self, Vertex* vertices, size_t vertex_count,
-        uint16_t* indices, size_t index_count)
+        Render* self, Vertex* oldvs, size_t oldvcount,
+        uint16_t* oldis, size_t oldicount)
 {
     // LOAD GLTF
     cgltf_options gltf_options = {0};
     cgltf_data* gltf_data = NULL;
     cgltf_result gltf_result = cgltf_parse_file(
                             &gltf_options, "cube.glb", &gltf_data);
-    if (gltf_result != cgltf_result_success) {
-        fatal("Failed to load GLTF.");
+    if (gltf_result != cgltf_result_success) fatal("Failed to load GLTF.");
+    gltf_result = cgltf_load_buffers(&gltf_options, gltf_data, "cube.glb");
+    if (gltf_result != cgltf_result_success) fatal("Failed to load GLTF buffers.");
+    
+    // Load materials
+    g_texture_count = gltf_data->materials_count;
+    g_texture_images = malloc_nofail(sizeof(VkImage) * g_texture_count);
+    g_texture_image_views = malloc_nofail(sizeof(VkImageView) * g_texture_count);
+    g_texture_image_memories =
+        malloc_nofail(sizeof(VkDeviceMemory) * g_texture_count);
+    for (size_t i=0; i < g_texture_count; i++) {
+        cgltf_material* gltf_material = &gltf_data->materials[i];
+        DBASSERT(gltf_material->has_pbr_metallic_roughness);
+        cgltf_texture_view* gltf_texture_view = 
+            &gltf_material->pbr_metallic_roughness.base_color_texture;
+        cgltf_texture* gltf_texture = gltf_texture_view->texture;
+        cgltf_image* gltf_image = gltf_texture->image;
+        DBASSERT(!strcmp(gltf_image->mime_type, "image/jpeg"));
+        cgltf_buffer_view* image_buffer_view = gltf_image->buffer_view;
+        cgltf_buffer* image_buffer = image_buffer_view->buffer;
+        void* image_data = image_buffer->data + image_buffer_view->offset;
+        size_t image_size = image_buffer_view->size;
+
+        load_texture(self, image_data, image_size, &g_texture_images[i],
+                &g_texture_image_views[i], &g_texture_image_memories[i]);
     }
 
-    cgltf_scene* scene = gltf_data->scene;
-    cgltf_node** nodes = scene->nodes;
-    for (uint32_t i = 0; i < scene->nodes_count; i++) {
-        cgltf_node* node = nodes[i];
-        
+    g_meshes = malloc_nofail(sizeof(Mesh) * gltf_data->meshes_count);
+    g_meshes_count = gltf_data->meshes_count;
+
+    // Precalculate index and vertex buffer sizes
+    size_t index_count = 0;
+    size_t vertex_count = 0;
+    for (size_t i=0; i < gltf_data->meshes_count; i++) {
+        cgltf_mesh* gltf_mesh = &gltf_data->meshes[i];
+        for (size_t p=0; p < gltf_mesh->primitives_count; p++) {
+            cgltf_primitive* gltf_primitive = &gltf_mesh->primitives[p];
+            DBASSERT(gltf_primitive->type == cgltf_primitive_type_triangles);
+
+            for (size_t a=0; a < gltf_primitive->attributes_count; a++) {
+                cgltf_attribute* attribute = &gltf_primitive->attributes[a];
+                cgltf_accessor* accessor = attribute->data;
+                if (attribute->type == cgltf_attribute_type_position) {
+                    vertex_count += accessor->count;
+                }
+            }
+            DBASSERT(gltf_primitive->indices->component_type ==
+                    cgltf_component_type_r_16u);
+            index_count += gltf_primitive->indices->count;
+        }
     }
+    Vertex* vertices = malloc_nofail(vertex_count * sizeof(Vertex));
+    uint16_t* indices = malloc_nofail(index_count * sizeof(uint16_t));
+    printf("%d %d\n", vertex_count, index_count);
+
+    // Load meshes
+    size_t index_offset = 0;
+    size_t vertex_offset = 0;
+    for (size_t i=0; i < gltf_data->meshes_count; i++) {
+        cgltf_mesh* gltf_mesh = &gltf_data->meshes[i];
+        Mesh* mesh = &g_meshes[i];
+        mesh->primitives_count = gltf_mesh->primitives_count;
+        mesh->primitives = malloc_nofail(
+                        sizeof(Primitive) * mesh->primitives_count);
+        // Primitives
+        for (size_t p=0; p < gltf_mesh->primitives_count; p++) {
+            cgltf_primitive* gltf_primitive = &gltf_mesh->primitives[p];
+
+            // Material
+            size_t material_index = (size_t)(((char*)gltf_primitive->material -
+                    (char*) gltf_data->materials) / sizeof(cgltf_material));
+            mesh->primitives[p].texture = g_texture_image_views[material_index];
+
+            // Vertices
+            mesh->primitives[p].vertex_offset = vertex_offset;
+            size_t primitive_vertex_count;
+            for (size_t a=0; a < gltf_primitive->attributes_count; a++) {
+                cgltf_attribute* attribute = &gltf_primitive->attributes[a];
+                cgltf_accessor* accessor = attribute->data;
+                size_t count = accessor->count;
+                size_t stride = accessor->stride;
+                cgltf_buffer_view* buffer_view = accessor->buffer_view;
+                cgltf_buffer* buffer = buffer_view->buffer;
+                char* data = (char*) buffer->data +
+                            buffer_view->offset + accessor->offset;
+                
+                if (attribute->type == cgltf_attribute_type_position) {
+                    for (size_t v=0; v < count; v++) {
+                        vec3* pos = (vec3*) data;
+                        vertices[vertex_offset + v].position[0] = (*pos)[0];
+                        vertices[vertex_offset + v].position[1] = (*pos)[1];
+                        vertices[vertex_offset + v].position[2] = (*pos)[2];
+                        data += stride;
+                    }
+                    primitive_vertex_count = count;
+                }
+                
+                if (attribute->type == cgltf_attribute_type_texcoord) {
+                    for (size_t v=0; v < count; v++) {
+                        vec2* texcoord = (vec2*) data;
+                        vertices[vertex_offset + v].tex_coord[0] = (*texcoord)[0];
+                        vertices[vertex_offset + v].tex_coord[1] = (*texcoord)[1];
+                        data += stride;
+                    }
+                }
+            }
+            vertex_offset += primitive_vertex_count;
+
+            // Indices
+            mesh->primitives[p].index_offset = index_offset;
+            cgltf_accessor* index_accessor = gltf_primitive->indices;
+            size_t count = index_accessor->count;
+            size_t stride = index_accessor->stride;
+            cgltf_buffer_view* buffer_view = index_accessor->buffer_view;
+            cgltf_buffer* buffer = buffer_view->buffer;
+            char* data = (char*) buffer->data +
+                        buffer_view->offset + index_accessor->offset;
+            
+            for (size_t i=0; i < count; i++) {
+                uint16_t* index = (uint16_t*) data;
+                indices[index_offset + i] = *index;
+                data += stride;
+            }
+            mesh->primitives[p].index_count = count;
+            index_offset += count;
+        }
+    }
+
+    printf("Vertex buffer:\n");
+    for (int i=0; i < vertex_count; i++) {
+        printf("x: %f, y: %f, z: %f\n", vertices[i].position[0], vertices[i].position[1], vertices[i].position[2]);
+    }
+    printf("Index buffer:\n");
+    for (int i=0; i < index_count; i++) {
+        printf("%d\n", indices[i]);
+    }
+    printf("Primitives:\n");
+    for (int i=0; i < g_meshes_count; i++) {
+        for (int j=0; j < g_meshes[i].primitives_count; j++) {
+            Primitive* p = &g_meshes[i].primitives[j];
+            printf("vertex_off: %d, index_off: %d, index_count: %d", p->vertex_offset, p->index_offset, p->index_count);
+        }
+    }
+    
+
+    for (size_t i=0; i < g_meshes_count; i++) {
+        mem_free(g_meshes[i].primitives);
+    }
+    mem_free(g_meshes);
 
     cgltf_free(gltf_data);
-
-    load_texture(self, "stone.jpg", &self->texture_image,
-            &self->texture_image_view, &self->texture_image_memory);
 
     // UPLOAD PROJECTION MATRICES
     Uniform uniform;
@@ -1295,8 +1458,8 @@ void render_upload_map_mesh(
     }
 
     self->vertex_buffer = device_local_buffer_from_data(
-            (void*) vertices,
-            sizeof(Vertex) * vertex_count,
+            (void*) oldvs,
+            sizeof(Vertex) * oldvcount,
             VK_BUFFER_USAGE_VERTEX_BUFFER_BIT,
             self->physical_device,
             self->device,
@@ -1305,8 +1468,8 @@ void render_upload_map_mesh(
             &self->vertex_buffer_memory
     );
     self->index_buffer = device_local_buffer_from_data(
-            (void*) indices,
-            sizeof(uint16_t) * index_count,
+            (void*) oldis,
+            sizeof(uint16_t) * oldicount,
             VK_BUFFER_USAGE_INDEX_BUFFER_BIT,
             self->physical_device,
             self->device,
@@ -1335,7 +1498,7 @@ void render_upload_map_mesh(
 
         VkDescriptorImageInfo texture_info = {
             .imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
-            .imageView = self->texture_image_view,
+            .imageView = g_texture_image_views[0],
             .sampler = self->texture_sampler,
         };
 
@@ -1404,10 +1567,14 @@ void render_destroy(Render* self)
     cleanup_swapchain(self);
 
     vkDestroySampler(self->device, self->texture_sampler, NULL);
-    vkDestroyImageView(self->device, self->texture_image_view, NULL);
-    vkDestroyImage(self->device, self->texture_image, NULL);
-    vkFreeMemory(self->device, self->texture_image_memory, NULL);
-
+    for (size_t i=0; i < g_texture_count; i++) {     
+        vkDestroyImageView(self->device, g_texture_image_views[i], NULL);
+        vkDestroyImage(self->device, g_texture_images[i], NULL);
+        vkFreeMemory(self->device, g_texture_image_memories[i], NULL);
+    } 
+    mem_free(g_texture_image_views);
+    mem_free(g_texture_images);
+    mem_free(g_texture_image_memories);
 
     vkDestroyDescriptorSetLayout(self->device, self->view_proj_set_layout, NULL);
     vkDestroyDescriptorSetLayout(self->device, self->texture_set_layout, NULL);
@@ -1772,17 +1939,17 @@ void render_test()
 
     Vertex vertices[3] = {
         {
-            .position = {2.0, 1.0, 10.0},
+            .position = {6.0, 1.0, 10.0},
             .color = {1.0, 1.0, 1.0},
             .tex_coord = {1.0, 0.0},
         },
         {
-            .position = {1.0, 1.0, 10.0},
+            .position = {3.0, 1.0, 10.0},
             .color = {1.0, 1.0, 1.0},
             .tex_coord = {1.0, 1.0},
         },
         {
-            .position = {6.0, 10.0, 10.0},
+            .position = {3.0, 2.0, 10.0},
             .color = {1.0, 1.0, 1.0},
             .tex_coord = {0.0, 0.0},
         },
