@@ -23,6 +23,8 @@
 
 #define FRAMES_IN_FLIGHT 2
 
+extern GLFWwindow* g_window;
+
 // Scene structs
 typedef struct Primitive {
     VkDescriptorSet texture;
@@ -131,7 +133,6 @@ const char *const DEVICE_EXTENSIONS[DEVICE_EXTENSION_COUNT] = {
 #define FRAGMENT_SHADER_PATH "./shaders/frag.spv"
 
 typedef struct Render {
-    GLFWwindow* window;
     VkInstance instance;
     VkSurfaceKHR surface;
     VkPhysicalDevice physical_device;
@@ -188,8 +189,8 @@ typedef struct Render {
     size_t current_frame;
 } Render;
 
-static void render_swapchain_dependent_init(Render* self, GLFWwindow* window);
-static void recreate_swapchain(Render* self, GLFWwindow* window);
+static void render_swapchain_dependent_init(Render* self);
+static void recreate_swapchain(Render* self);
 
 Render* render_init() {
     // CREATE WINDOW
@@ -206,11 +207,9 @@ Render* render_init() {
     glfwWindowHint(GLFW_BLUE_BITS, mode->blueBits);
     glfwWindowHint(GLFW_REFRESH_RATE, mode->refreshRate);
      
-    GLFWwindow* window = glfwCreateWindow(
-            mode->width, mode->height, "Demo", monitor, NULL);
-
     Render* self = (Render*) malloc_nofail(sizeof(Render));
-    self->window = window;
+    g_window = glfwCreateWindow(
+            mode->width, mode->height, "Demo", monitor, NULL);
 
     // CREATE INSTANCE
     VkApplicationInfo appInfo = {
@@ -242,7 +241,7 @@ Render* render_init() {
 
     // CREATE SURFACE
     if (glfwCreateWindowSurface(
-            self->instance, window, NULL, &self->surface) != VK_SUCCESS) {
+            self->instance, g_window, NULL, &self->surface) != VK_SUCCESS) {
         fatal("Failed to create surface.");
     }
 
@@ -524,11 +523,11 @@ Render* render_init() {
                 &self->commands_executed_fences[i]);
     }
 
-    render_swapchain_dependent_init(self, window);
+    render_swapchain_dependent_init(self);
     return self;
 }
 
-static void render_swapchain_dependent_init(Render* self, GLFWwindow* window)
+static void render_swapchain_dependent_init(Render* self)
 {
     // CREATE SWAPCHAIN
     // Choose swap surface format
@@ -593,7 +592,7 @@ static void render_swapchain_dependent_init(Render* self, GLFWwindow* window)
     } else {
         int width;
         int height;
-        glfwGetFramebufferSize(self->window, &width, &height);
+        glfwGetFramebufferSize(g_window, &width, &height);
         VkExtent2D actual_extent = {
             (uint32_t) width,
             (uint32_t) height,
@@ -1047,7 +1046,9 @@ static void render_swapchain_dependent_init(Render* self, GLFWwindow* window)
     }
 }
 
-void render_draw_frame(Render* self, GLFWwindow* window) {
+void render_draw_frame(Render* self) {
+    glfwPollEvents();
+
     size_t current_frame = self->current_frame;
     uint32_t image_index;
     VkResult acquire_image_result =
@@ -1056,7 +1057,7 @@ void render_draw_frame(Render* self, GLFWwindow* window) {
                 &image_index);
 
     if (acquire_image_result == VK_ERROR_OUT_OF_DATE_KHR) {
-        recreate_swapchain(self, window);
+        recreate_swapchain(self);
         return;
     } else if (acquire_image_result != VK_SUCCESS &&
             acquire_image_result != VK_SUBOPTIMAL_KHR) {
@@ -1175,12 +1176,16 @@ void render_draw_frame(Render* self, GLFWwindow* window) {
     VkResult present_result = vkQueuePresentKHR(self->present_queue, &present_info);
     if (present_result == VK_ERROR_OUT_OF_DATE_KHR ||
             present_result == VK_SUBOPTIMAL_KHR) {
-        recreate_swapchain(self, window);
+        recreate_swapchain(self);
     } else if (present_result != VK_SUCCESS) {
         fatal("Failed to present swapchain image.");
     }
 
     self->current_frame = (current_frame + 1) % 2;
+}
+
+bool render_exit(Render* render) {
+    return glfwWindowShouldClose(g_window);
 }
 
 static void load_texture(Render* self, void* buffer, size_t len,
@@ -1465,7 +1470,7 @@ void render_upload_map_mesh(Render* self)
     g_nodes = malloc_nofail(sizeof(Node) * g_nodes_count);
 
     bool camera_found = false;
-    mat4 camera_view;
+    Uniform uniform;
     for (size_t n=0; n < g_nodes_count; n++) {
         Node* node = &g_nodes[n];
         cgltf_node* gltf_node = &gltf_nodes[n];
@@ -1482,22 +1487,6 @@ void render_upload_map_mesh(Render* self)
             glm_translate(transform, gltf_node->translation);
         }
         memcpy(node->transform, transform, sizeof(mat4));
-
-        // Load camera
-        cgltf_camera* gltf_camera = gltf_node->camera;
-        if (gltf_camera) {
-            camera_found = true;
-            // TODO query window size
-            DBASSERT(gltf_camera->type == gltf_camera_type_perspective);
-            mat4 proj;
-            glm_perspective_default(
-              self->swapchain_extent.width /
-                (float) self->swapchain_extent.height, proj);
-            proj[1][1] *= -1;
-
-            glm_mat4_mul(transform, proj, uniform.view_proj);
-            glm_mat4_print(uniform.view_proj, stdout);
-        }
 
         node->mesh = NULL;
         if (gltf_node->mesh) {
@@ -1519,6 +1508,32 @@ void render_upload_map_mesh(Render* self)
             size_t child_index = (size_t) (((char*) gltf_node->children[c] -
                         (char*) gltf_data->nodes) / sizeof(cgltf_node));
             node->children[c] = &g_nodes[child_index];    
+        }
+
+        // Load camera
+        // TODO REALLY load camera
+        cgltf_camera* gltf_camera = gltf_node->camera;
+        if (gltf_camera) {
+            camera_found = true;
+            DBASSERT(!gltf_node->parent);
+            DBASSERT(gltf_camera->type == cgltf_camera_type_perspective);
+
+            mat4 proj;
+            glm_perspective(0.4,
+                self->swapchain_extent.width /
+                (float) self->swapchain_extent.height, 0.1, 1000.0, proj);
+            proj[1][1] *= -1;
+
+            //glm_mat4_mul(proj, transform, uniform.view_proj);
+            
+            vec3 eye = {0.0f, 0.0f, 30.0f};
+            vec3 up = {0.0f, 1.0f, 0.0f};
+            vec3 at = {0.0f, 0.0f, 0.0f};
+            mat4 camview;
+            glm_lookat(eye, at, up, camview);
+            glm_mat4_mul(proj, camview, uniform.view_proj);
+
+            glm_mat4_print(camview,stdout);
         }
     }
     DBASSERT(camera_found);
@@ -1547,22 +1562,6 @@ void render_upload_map_mesh(Render* self)
     mem_free(indices);
 
     cgltf_free(gltf_data);
-
-    // UPLOAD PROJECTION MATRICES
-    Uniform uniform;
-    mat4 proj;
-    glm_perspective_default(
-      self->swapchain_extent.width /
-        (float) self->swapchain_extent.height, proj);
-    proj[1][1] *= -1;
-
-    mat4 view;
-    vec3 eye = {0.0f, 0.0f, 30.0f};
-    vec3 center = {0.0f, 0.0f, 0.0f};
-    vec3 up = {0.0f, 1.0f, 0.0f};
-    glm_lookat(eye, center, up, view);
-
-    glm_mat4_mul(proj, view, uniform.view_proj);
 
     for (size_t i=0; i < 2; i++) {
         upload_to_device_local_buffer(
@@ -1679,7 +1678,7 @@ void render_destroy(Render* self)
     vkDestroySurfaceKHR(self->instance, self->surface, NULL);
     vkDestroyInstance(self->instance, NULL);
 
-    glfwDestroyWindow(self->window);
+    glfwDestroyWindow(g_window);
     glfwTerminate();
 
     mem_free(self);
@@ -2002,12 +2001,12 @@ static VkBuffer device_local_buffer_from_data(
     return device_local_buffer;
 }
 
-static void recreate_swapchain(Render* self, GLFWwindow* window)
+static void recreate_swapchain(Render* self)
 {
     int width = 0, height = 0;
     while (width == 0 || height == 0)
     {
-        glfwGetFramebufferSize(window, &width, &height);
+        glfwGetFramebufferSize(g_window, &width, &height);
         glfwWaitEvents();
     }
 
@@ -2015,32 +2014,5 @@ static void recreate_swapchain(Render* self, GLFWwindow* window)
 
     cleanup_swapchain(self);
 
-    render_swapchain_dependent_init(self, window);
-}
-
-void render_test()
-{
-    Render* render = render_init();
-
-    render_upload_map_mesh(render);
-
-    while (!glfwWindowShouldClose(render->window)) {
-        glfwPollEvents();
-        render_draw_frame(render, render->window);
-    }
-
-    render_destroy(render);
-}
-
-int main()
-{
-    mem_init(MBS(24));
-
-    render_test();
-
-    mem_check();
-    mem_inspect();
-    mem_shutdown();
-    printf("%s", "Success!\n");
-    return EXIT_SUCCESS;
+    render_swapchain_dependent_init(self);
 }
