@@ -22,11 +22,10 @@
 #define ENGINE_NAME "None"
 
 #define FRAMES_IN_FLIGHT 2
-#define SETS_PER_FRAME 2
 
 // Scene structs
 typedef struct Primitive {
-    VkImageView texture;
+    VkDescriptorSet texture;
     uint32_t vertex_offset;
     uint32_t index_offset;
     uint32_t index_count;
@@ -50,10 +49,12 @@ typedef struct Node {
 static Node* g_nodes;
 static size_t g_nodes_count;
 
+#define MAX_TEXTURES 50
+static size_t g_texture_count;
 static VkImage* g_texture_images;
 static VkDeviceMemory* g_texture_image_memories;
 static VkImageView* g_texture_image_views;
-static size_t g_texture_count;
+static VkDescriptorSet* g_texture_descriptor_sets;
 
 
 typedef struct Uniform {
@@ -162,6 +163,7 @@ typedef struct Render {
     VkFramebuffer framebuffers[FRAMES_IN_FLIGHT];
 
     VkDescriptorPool descriptor_pool;
+    VkDescriptorPool texture_descriptor_pool;
 
     VkBuffer vertex_buffer;
     VkDeviceMemory vertex_buffer_memory;
@@ -448,7 +450,7 @@ Render* render_init() {
         fatal("Failed to create texture sampler.");
     }
 
-    // CREATE DESCRIPTOR SET LAYOUT AND PIPELINE LAYOUT
+    // CREATE DESCRIPTOR SET LAYOUTS AND PIPELINE LAYOUT
     VkDescriptorSetLayoutBinding view_proj_binding = {
         .binding = 0,
         .descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
@@ -849,7 +851,7 @@ static void render_swapchain_dependent_init(Render* self, GLFWwindow* window)
         .lineWidth = 1.0f,
         .polygonMode = VK_POLYGON_MODE_FILL,
         .cullMode = VK_CULL_MODE_BACK_BIT,
-        .frontFace = VK_FRONT_FACE_CLOCKWISE,
+        .frontFace = VK_FRONT_FACE_COUNTER_CLOCKWISE,
         .depthBiasEnable = VK_FALSE,
     };
 
@@ -959,11 +961,11 @@ static void render_swapchain_dependent_init(Render* self, GLFWwindow* window)
         }
     }
 
-    // CREATE DESCRIPTOR POOL
-    enum { descriptor_type_count = 2 };
+    // CREATE DESCRIPTOR POOLS
+    // TODO rewrite to be more specific
+    enum { descriptor_type_count = 1 };
     VkDescriptorType descriptor_types[descriptor_type_count] = {
         VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
-        VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER
     };
     VkDescriptorPoolSize* pool_sizes = malloc_nofail(
             sizeof(VkDescriptorPoolSize) * descriptor_type_count);
@@ -975,7 +977,7 @@ static void render_swapchain_dependent_init(Render* self, GLFWwindow* window)
         .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO,
         .poolSizeCount = descriptor_type_count,
         .pPoolSizes = pool_sizes,
-        .maxSets = FRAMES_IN_FLIGHT * SETS_PER_FRAME,
+        .maxSets = FRAMES_IN_FLIGHT,
     };
     if (vkCreateDescriptorPool(
             self->device, &pool_info, NULL, &self->descriptor_pool)
@@ -983,6 +985,22 @@ static void render_swapchain_dependent_init(Render* self, GLFWwindow* window)
         fatal("Failed to create descriptor pool.");
     }
     mem_free(pool_sizes);
+
+    VkDescriptorPoolSize texture_pool_size = {
+        .type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+        .descriptorCount = MAX_TEXTURES,
+    };
+    VkDescriptorPoolCreateInfo texture_pool_info = {
+        .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO,
+        .poolSizeCount = 1,
+        .pPoolSizes = &texture_pool_size,
+        .maxSets = MAX_TEXTURES,
+    };
+    if (vkCreateDescriptorPool(
+            self->device, &texture_pool_info, NULL, &self->texture_descriptor_pool)
+            != VK_SUCCESS) {
+        fatal("Failed to create texture descriptor pool.");
+    }
 
     // CREATE UNIFORM BUFFERS
     for (uint32_t i=0; i < FRAMES_IN_FLIGHT; i++) {
@@ -1001,29 +1019,18 @@ static void render_swapchain_dependent_init(Render* self, GLFWwindow* window)
     self->current_frame = 0;
 
     // CREATE DESCRIPTOR SETS
-    VkDescriptorSetLayout layout_copies[FRAMES_IN_FLIGHT];
-    for (size_t i=0; i < FRAMES_IN_FLIGHT; i++) {
-        layout_copies[i] = self->view_proj_set_layout;
-    }
     VkDescriptorSetAllocateInfo desc_set_alloc_info = {
         .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO,
         .descriptorPool = self->descriptor_pool,
-        .descriptorSetCount = FRAMES_IN_FLIGHT,
-        .pSetLayouts = layout_copies,
+        .descriptorSetCount = 1,
+        .pSetLayouts = &self->view_proj_set_layout,
     };
-    if (vkAllocateDescriptorSets(
-            self->device, &desc_set_alloc_info, self->view_proj_sets
-            ) != VK_SUCCESS) {
-        fatal("Failed to allocate descriptor sets.");
-    }
-
     for (size_t i=0; i < FRAMES_IN_FLIGHT; i++) {
-        layout_copies[i] = self->texture_set_layout;
-    }
-    if (vkAllocateDescriptorSets(
-            self->device, &desc_set_alloc_info, self->texture_sets
-            ) != VK_SUCCESS) {
-        fatal("Failed to allocate descriptor sets.");
+        if (vkAllocateDescriptorSets(
+                self->device, &desc_set_alloc_info, &self->view_proj_sets[i]
+                ) != VK_SUCCESS) {
+            fatal("Failed to allocate descriptor sets.");
+        }
     }
 
     // ALLOCATE COMMAND BUFFERS
@@ -1042,10 +1049,6 @@ static void render_swapchain_dependent_init(Render* self, GLFWwindow* window)
 
 void render_draw_frame(Render* self, GLFWwindow* window) {
     size_t current_frame = self->current_frame;
-    PushConstants push_constants = {
-        .model = GLM_MAT4_IDENTITY_INIT,
-    };
-
     uint32_t image_index;
     VkResult acquire_image_result =
         vkAcquireNextImageKHR(self->device, self->swapchain, UINT64_MAX,
@@ -1088,14 +1091,6 @@ void render_draw_frame(Render* self, GLFWwindow* window) {
     vkCmdBeginRenderPass(self->command_buffers[current_frame], &render_pass_info,
                          VK_SUBPASS_CONTENTS_INLINE);
 
-    vkCmdPushConstants(
-            self->command_buffers[current_frame],
-            self->graphics_pipeline_layout,
-            VK_SHADER_STAGE_VERTEX_BIT,
-            0,
-            sizeof(PushConstants),
-            &push_constants);
-
     vkCmdBindPipeline(self->command_buffers[current_frame],
             VK_PIPELINE_BIND_POINT_GRAPHICS, self->graphics_pipeline);
 
@@ -1105,15 +1100,45 @@ void render_draw_frame(Render* self, GLFWwindow* window) {
     vkCmdBindIndexBuffer(
             self->command_buffers[current_frame], self->index_buffer, 0,
             VK_INDEX_TYPE_UINT16);
-
     vkCmdBindDescriptorSets(self->command_buffers[current_frame],
             VK_PIPELINE_BIND_POINT_GRAPHICS, self->graphics_pipeline_layout,
             0, 1, &self->view_proj_sets[current_frame], 0, NULL);
-    vkCmdBindDescriptorSets(self->command_buffers[current_frame],
-            VK_PIPELINE_BIND_POINT_GRAPHICS, self->graphics_pipeline_layout,
-            1, 1,&self->texture_sets[current_frame], 0, NULL);
 
-    vkCmdDrawIndexed(self->command_buffers[current_frame], 3, 1, 0, 0, 0);
+    // Draw the nodes
+    for (size_t n=0; n < g_nodes_count; n++) {
+        Mesh* mesh = g_nodes[n].mesh;
+        if (!mesh) continue;
+
+        mat4 transform;
+        memcpy(transform, g_nodes[n].transform, sizeof(transform));
+        Node* parent = g_nodes[n].parent;
+        while (parent) {
+            mat4 parent_transform;
+            memcpy(parent_transform, parent->transform, sizeof(mat4));
+            glm_mat4_mul(parent_transform, transform, transform);
+            parent = parent->parent;
+        }
+
+        vkCmdPushConstants(
+                self->command_buffers[current_frame],
+                self->graphics_pipeline_layout,
+                VK_SHADER_STAGE_VERTEX_BIT,
+                0,
+                sizeof(PushConstants),
+                &transform);
+
+        for (size_t p=0; p < mesh->primitives_count; p++) {
+            Primitive* primitive = &mesh->primitives[p];
+            vkCmdBindDescriptorSets(
+                self->command_buffers[current_frame],
+                VK_PIPELINE_BIND_POINT_GRAPHICS, self->graphics_pipeline_layout,
+                1, 1, &primitive->texture, 0, NULL);
+            vkCmdDrawIndexed(self->command_buffers[current_frame],
+                primitive->index_count, 1, primitive->index_offset,
+                primitive->vertex_offset, 0);
+        }
+    }
+
     vkCmdEndRenderPass(self->command_buffers[current_frame]);
 
     if (vkEndCommandBuffer(self->command_buffers[current_frame]) != VK_SUCCESS) {
@@ -1159,7 +1184,8 @@ void render_draw_frame(Render* self, GLFWwindow* window) {
 }
 
 static void load_texture(Render* self, void* buffer, size_t len,
-        VkImage* image, VkImageView* view, VkDeviceMemory* memory)
+        VkImage* image, VkImageView* view, VkDeviceMemory* memory,
+        VkDescriptorSet* descriptor_set)
 {
     // Load pixels
     int tex_width, tex_height, tex_channels;
@@ -1267,6 +1293,33 @@ static void load_texture(Render* self, void* buffer, size_t len,
     create_2d_image_view(
             self->device, *image, VK_FORMAT_R8G8B8A8_SRGB,
             VK_IMAGE_ASPECT_COLOR_BIT, view);
+
+    VkDescriptorSetAllocateInfo tex_set_alloc_info = {
+        .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO,
+        .descriptorPool = self->texture_descriptor_pool,
+        .descriptorSetCount = 1,
+        .pSetLayouts = &self->texture_set_layout,
+    };
+    if (vkAllocateDescriptorSets(
+            self->device, &tex_set_alloc_info, descriptor_set) != VK_SUCCESS) {
+        fatal("Failed to allocate descriptor sets.");
+    }
+
+    VkDescriptorImageInfo texture_info = {
+        .imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+        .imageView = *view,
+        .sampler = self->texture_sampler,
+    };
+    VkWriteDescriptorSet texture_write = {
+        .sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+        .dstSet = *descriptor_set,
+        .dstBinding = 0,
+        .dstArrayElement = 0,
+        .descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+        .descriptorCount = 1,
+        .pImageInfo = &texture_info,
+    };
+    vkUpdateDescriptorSets(self->device, 1, &texture_write, 0, NULL);
 }
 
 void render_upload_map_mesh(Render* self)
@@ -1286,6 +1339,8 @@ void render_upload_map_mesh(Render* self)
     g_texture_image_views = malloc_nofail(sizeof(VkImageView) * g_texture_count);
     g_texture_image_memories =
         malloc_nofail(sizeof(VkDeviceMemory) * g_texture_count);
+    g_texture_descriptor_sets = malloc_nofail(
+            sizeof(VkDescriptorSet) * g_texture_count);
     for (size_t i=0; i < g_texture_count; i++) {
         cgltf_material* gltf_material = &gltf_data->materials[i];
         DBASSERT(gltf_material->has_pbr_metallic_roughness);
@@ -1300,7 +1355,8 @@ void render_upload_map_mesh(Render* self)
         size_t image_size = image_buffer_view->size;
 
         load_texture(self, image_data, image_size, &g_texture_images[i],
-                &g_texture_image_views[i], &g_texture_image_memories[i]);
+                &g_texture_image_views[i], &g_texture_image_memories[i],
+                &g_texture_descriptor_sets[i]);
     }
 
     g_meshes = malloc_nofail(sizeof(Mesh) * gltf_data->meshes_count);
@@ -1329,7 +1385,6 @@ void render_upload_map_mesh(Render* self)
     }
     Vertex* vertices = malloc_nofail(vertex_count * sizeof(Vertex));
     uint16_t* indices = malloc_nofail(index_count * sizeof(uint16_t));
-    printf("%d %d\n", vertex_count, index_count);
 
     // Load meshes
     size_t index_offset = 0;
@@ -1347,7 +1402,7 @@ void render_upload_map_mesh(Render* self)
             // Material
             size_t material_index = (size_t)(((char*)gltf_primitive->material -
                     (char*) gltf_data->materials) / sizeof(cgltf_material));
-            mesh->primitives[p].texture = g_texture_image_views[material_index];
+            mesh->primitives[p].texture = g_texture_descriptor_sets[material_index];
 
             // Vertices
             mesh->primitives[p].vertex_offset = vertex_offset;
@@ -1408,6 +1463,9 @@ void render_upload_map_mesh(Render* self)
     cgltf_node* gltf_nodes = gltf_data->nodes;
     g_nodes_count = gltf_data->nodes_count;
     g_nodes = malloc_nofail(sizeof(Node) * g_nodes_count);
+
+    bool camera_found = false;
+    mat4 camera_view;
     for (size_t n=0; n < g_nodes_count; n++) {
         Node* node = &g_nodes[n];
         cgltf_node* gltf_node = &gltf_nodes[n];
@@ -1424,6 +1482,22 @@ void render_upload_map_mesh(Render* self)
             glm_translate(transform, gltf_node->translation);
         }
         memcpy(node->transform, transform, sizeof(mat4));
+
+        // Load camera
+        cgltf_camera* gltf_camera = gltf_node->camera;
+        if (gltf_camera) {
+            camera_found = true;
+            // TODO query window size
+            DBASSERT(gltf_camera->type == gltf_camera_type_perspective);
+            mat4 proj;
+            glm_perspective_default(
+              self->swapchain_extent.width /
+                (float) self->swapchain_extent.height, proj);
+            proj[1][1] *= -1;
+
+            glm_mat4_mul(transform, proj, uniform.view_proj);
+            glm_mat4_print(uniform.view_proj, stdout);
+        }
 
         node->mesh = NULL;
         if (gltf_node->mesh) {
@@ -1447,6 +1521,7 @@ void render_upload_map_mesh(Render* self)
             node->children[c] = &g_nodes[child_index];    
         }
     }
+    DBASSERT(camera_found);
 
     self->vertex_buffer = device_local_buffer_from_data(
             (void*) vertices,
@@ -1475,19 +1550,17 @@ void render_upload_map_mesh(Render* self)
 
     // UPLOAD PROJECTION MATRICES
     Uniform uniform;
-    // TODO query window size
-    mat4 view;
-    vec3 eye = {4.0, 1.0, -10.0};
-    vec3 up = {0.0, 1.0, 0.0};
-    vec3 center = {4.0, 1.0, 0.0};
-    glm_lookat(eye, center, up, view);
-
     mat4 proj;
     glm_perspective_default(
-            self->swapchain_extent.width / (float) self->swapchain_extent.height,
-            proj);
-    //proj[0][0] *= -1;
-    //proj[1][1] *= -1;
+      self->swapchain_extent.width /
+        (float) self->swapchain_extent.height, proj);
+    proj[1][1] *= -1;
+
+    mat4 view;
+    vec3 eye = {0.0f, 0.0f, 30.0f};
+    vec3 center = {0.0f, 0.0f, 0.0f};
+    vec3 up = {0.0f, 1.0f, 0.0f};
+    glm_lookat(eye, center, up, view);
 
     glm_mat4_mul(proj, view, uniform.view_proj);
 
@@ -1502,8 +1575,6 @@ void render_upload_map_mesh(Render* self)
                 self->graphics_command_pool
         );
     }
-
-
     for (size_t i = 0; i < FRAMES_IN_FLIGHT; i++) {
         VkDescriptorBufferInfo buffer_info = {
             .buffer = self->view_proj_buffers[i],
@@ -1521,26 +1592,7 @@ void render_upload_map_mesh(Render* self)
             .pBufferInfo = &buffer_info,
         };
 
-        VkDescriptorImageInfo texture_info = {
-            .imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
-            .imageView = g_texture_image_views[0],
-            .sampler = self->texture_sampler,
-        };
-
-        VkWriteDescriptorSet texture_write = {
-            .sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
-            .dstSet = self->texture_sets[i],
-            .dstBinding = 0,
-            .dstArrayElement = 0,
-            .descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
-            .descriptorCount = 1,
-            .pImageInfo = &texture_info,
-        };
-        VkWriteDescriptorSet descriptor_writes[2] = {
-            uniform_write, texture_write
-        };
-
-        vkUpdateDescriptorSets(self->device, 2, descriptor_writes, 0, NULL);
+        vkUpdateDescriptorSets(self->device, 1, &uniform_write, 0, NULL);
     }
 }
 
@@ -1577,7 +1629,6 @@ static void cleanup_swapchain(Render* self)
         vkDestroyImageView(self->device, self->swapchain_image_views[i], NULL);
     }
 
-
     for (size_t i=0; i < FRAMES_IN_FLIGHT; i++) {
         vkDestroyBuffer(self->device, self->view_proj_buffers[i], NULL);
         vkFreeMemory(self->device, self->view_proj_buffers_memories[i], NULL);
@@ -1599,6 +1650,7 @@ void render_destroy(Render* self)
     cleanup_swapchain(self);
 
     vkDestroySampler(self->device, self->texture_sampler, NULL);
+    vkDestroyDescriptorPool(self->device, self->texture_descriptor_pool, NULL);
     for (size_t i=0; i < g_texture_count; i++) {     
         vkDestroyImageView(self->device, g_texture_image_views[i], NULL);
         vkDestroyImage(self->device, g_texture_images[i], NULL);
@@ -1607,6 +1659,7 @@ void render_destroy(Render* self)
     mem_free(g_texture_image_views);
     mem_free(g_texture_images);
     mem_free(g_texture_image_memories);
+    mem_free(g_texture_descriptor_sets);
 
     vkDestroyDescriptorSetLayout(self->device, self->view_proj_set_layout, NULL);
     vkDestroyDescriptorSetLayout(self->device, self->texture_set_layout, NULL);
