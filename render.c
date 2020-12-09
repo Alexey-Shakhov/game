@@ -210,6 +210,8 @@ Render* render_init() {
     Render* self = (Render*) malloc_nofail(sizeof(Render));
     g_window = glfwCreateWindow(
             mode->width, mode->height, "Demo", monitor, NULL);
+    glfwSetInputMode(g_window, GLFW_CURSOR, GLFW_CURSOR_DISABLED);
+    glfwSetInputMode(g_window, GLFW_RAW_MOUSE_MOTION, GLFW_TRUE);
 
     // CREATE INSTANCE
     VkApplicationInfo appInfo = {
@@ -1046,10 +1048,29 @@ static void render_swapchain_dependent_init(Render* self)
     }
 }
 
-void render_draw_frame(Render* self) {
-    glfwPollEvents();
-
+void render_draw_frame(Render* self, vec3 cam_pos, vec3 cam_dir, vec3 cam_up) {
     size_t current_frame = self->current_frame;
+
+    Uniform uniform;
+    mat4 proj;
+    glm_perspective(0.6,
+        self->swapchain_extent.width /
+        (float) self->swapchain_extent.height, 0.01, 1000.0, proj);
+    proj[1][1] *= -1;
+    mat4 view;
+    glm_look(cam_pos, cam_dir, cam_up, view);
+    glm_mat4_mul(proj, view, uniform.view_proj);
+
+    upload_to_device_local_buffer(
+            (void*) &uniform,
+            sizeof(uniform),
+            self->view_proj_buffers[current_frame],
+            self->physical_device,
+            self->device,
+            self->graphics_queue,
+            self->graphics_command_pool
+    );
+
     uint32_t image_index;
     VkResult acquire_image_result =
         vkAcquireNextImageKHR(self->device, self->swapchain, UINT64_MAX,
@@ -1182,6 +1203,8 @@ void render_draw_frame(Render* self) {
     }
 
     self->current_frame = (current_frame + 1) % 2;
+
+    glfwPollEvents();
 }
 
 bool render_exit(Render* render) {
@@ -1470,7 +1493,6 @@ void render_upload_map_mesh(Render* self)
     g_nodes = malloc_nofail(sizeof(Node) * g_nodes_count);
 
     bool camera_found = false;
-    Uniform uniform;
     for (size_t n=0; n < g_nodes_count; n++) {
         Node* node = &g_nodes[n];
         cgltf_node* gltf_node = &gltf_nodes[n];
@@ -1512,31 +1534,19 @@ void render_upload_map_mesh(Render* self)
 
         // Load camera
         // TODO REALLY load camera
+        /*
         cgltf_camera* gltf_camera = gltf_node->camera;
         if (gltf_camera) {
             camera_found = true;
             DBASSERT(!gltf_node->parent);
             DBASSERT(gltf_camera->type == cgltf_camera_type_perspective);
 
-            mat4 proj;
-            glm_perspective(0.4,
-                self->swapchain_extent.width /
-                (float) self->swapchain_extent.height, 0.1, 1000.0, proj);
-            proj[1][1] *= -1;
-
-            //glm_mat4_mul(proj, transform, uniform.view_proj);
-            
-            vec3 eye = {0.0f, 0.0f, 30.0f};
-            vec3 up = {0.0f, 1.0f, 0.0f};
-            vec3 at = {0.0f, 0.0f, 0.0f};
-            mat4 camview;
-            glm_lookat(eye, at, up, camview);
-            glm_mat4_mul(proj, camview, uniform.view_proj);
 
             glm_mat4_print(camview,stdout);
         }
+        */
     }
-    DBASSERT(camera_found);
+    //DBASSERT(camera_found);
 
     self->vertex_buffer = device_local_buffer_from_data(
             (void*) vertices,
@@ -1563,17 +1573,6 @@ void render_upload_map_mesh(Render* self)
 
     cgltf_free(gltf_data);
 
-    for (size_t i=0; i < 2; i++) {
-        upload_to_device_local_buffer(
-                (void*) &uniform,
-                sizeof(uniform),
-                self->view_proj_buffers[i],
-                self->physical_device,
-                self->device,
-                self->graphics_queue,
-                self->graphics_command_pool
-        );
-    }
     for (size_t i = 0; i < FRAMES_IN_FLIGHT; i++) {
         VkDescriptorBufferInfo buffer_info = {
             .buffer = self->view_proj_buffers[i],

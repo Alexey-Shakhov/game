@@ -9,7 +9,7 @@
 typedef struct Render Render;
 Render* render_init();
 bool render_exit(Render* render);
-void render_draw_frame(Render* self);
+void render_draw_frame(Render* self, vec3 cam_pos, vec3 cam_dir, vec3 cam_up);
 void render_destroy(Render* self);
 
 typedef struct Vertex {
