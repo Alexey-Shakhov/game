@@ -9,6 +9,8 @@
 #define MOVEMENT_SPEED 10
 #define ROTATION_SPEED 0.001
 
+#define MLOOK_LIMIT (CGLM_PI/8)
+
 int main()
 {
     mem_init(MBS(24));
@@ -61,9 +63,15 @@ int main()
         double mouse_dx = mouse_x_new - mouse_x;
         double mouse_dy = mouse_y_new - mouse_y;
         glfwGetCursorPos(g_window, &mouse_x, &mouse_y);
-        // TODO also rotate up
         glm_vec3_rotate(cam_dir, -mouse_dx * ROTATION_SPEED, cam_up);
-        glm_vec3_rotate(cam_dir, -mouse_dy * ROTATION_SPEED, side);
+
+        float mlook_angle = -mouse_dy * ROTATION_SPEED;
+        float up_cam_angle = glm_vec3_angle(cam_up, cam_dir); 
+        if (mlook_angle > up_cam_angle - MLOOK_LIMIT)
+            mlook_angle = up_cam_angle - MLOOK_LIMIT;
+        if (-mlook_angle > CGLM_PI - up_cam_angle - MLOOK_LIMIT)
+            mlook_angle = - (CGLM_PI - up_cam_angle - MLOOK_LIMIT);
+        glm_vec3_rotate(cam_dir, mlook_angle, side);
 
         render_draw_frame(render, cam_pos, cam_dir, cam_up);
     }
