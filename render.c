@@ -127,7 +127,6 @@ const char *const DEVICE_EXTENSIONS[DEVICE_EXTENSION_COUNT] = {
 };
 
 // TODO account for no multisampling support on the device
-#define SAMPLE_COUNT VK_SAMPLE_COUNT_4_BIT
 
 #define VERTEX_SHADER_PATH "./shaders/vert.spv"
 #define FRAGMENT_SHADER_PATH "./shaders/frag.spv"
@@ -658,23 +657,22 @@ static void render_swapchain_dependent_init(Render* self)
             &self->swapchain_image_views[i]);
     }
 
-    // CREATE RENDER PASS
+    // FINAL COMPOSITION RENDER PASS AND FRAMEBUFFER
     struct VkAttachmentDescription color_attachment = {
         .format = self->swapchain_format,
-        .samples = SAMPLE_COUNT,
+        .samples = VK_SAMPLE_COUNT_1_BIT,
         .loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR,
         .storeOp = VK_ATTACHMENT_STORE_OP_STORE,
         .stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE,
         .stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE,
         .initialLayout = VK_IMAGE_LAYOUT_UNDEFINED,
-        .finalLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
-        .flags = 0,
+        .finalLayout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR,
     };
 
     VkFormat depth_format = find_depth_format(self->physical_device);
     struct VkAttachmentDescription depth_attachment = {
         .format = depth_format,
-        .samples = SAMPLE_COUNT,
+        .samples = VK_SAMPLE_COUNT_1_BIT,
         .loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR,
         .storeOp = VK_ATTACHMENT_STORE_OP_DONT_CARE,
         .stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE,
@@ -683,20 +681,9 @@ static void render_swapchain_dependent_init(Render* self)
         .finalLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL,
     };
 
-    struct VkAttachmentDescription color_attachment_resolve = {
-        .format = self->swapchain_format,
-        .samples = VK_SAMPLE_COUNT_1_BIT,
-        .loadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE,
-        .storeOp = VK_ATTACHMENT_STORE_OP_STORE,
-        .stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE,
-        .stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE,
-        .initialLayout = VK_IMAGE_LAYOUT_UNDEFINED,
-        .finalLayout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR,
-    };
-
-    enum {attachment_count = 3};
+    enum {attachment_count = 2};
     struct VkAttachmentDescription attachments[attachment_count] = {
-        color_attachment, depth_attachment, color_attachment_resolve,
+        color_attachment, depth_attachment,
     };
     struct VkAttachmentReference color_attachment_ref = {
         .attachment = 0,
@@ -706,29 +693,36 @@ static void render_swapchain_dependent_init(Render* self)
         .attachment = 1,
         .layout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL,
     };
-    struct VkAttachmentReference color_attachment_resolve_ref = {
-        .attachment = 2,
-        .layout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
-    };
 
     VkSubpassDescription subpass = {
         .pipelineBindPoint = VK_PIPELINE_BIND_POINT_GRAPHICS,
         .colorAttachmentCount = 1,
         .pColorAttachments = &color_attachment_ref,
         .pDepthStencilAttachment = &depth_attachment_ref,
-        .pResolveAttachments = &color_attachment_resolve_ref,
     };
 
-    struct VkSubpassDependency dependency = {
+    struct VkSubpassDependency dependency_start = {
         .srcSubpass = VK_SUBPASS_EXTERNAL,
         .dstSubpass = 0,
-        .srcStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT |
-            VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT,
-        .srcAccessMask = 0,
-        .dstStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT |
-            VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT,
-        .dstAccessMask = VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_READ_BIT |
+        .srcStageMask = VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT,
+        .dstStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
+        .srcAccessMask = VK_ACCESS_MEMORY_READ_BIT,
+        .dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_READ_BIT |
                          VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT,
+        .dependencyFlags = VK_DEPENDENCY_BY_REGION_BIT,
+    };
+    struct VkSubpassDependency dependency_end = {
+        .srcSubpass = 0,
+        .dstSubpass = VK_SUBPASS_EXTERNAL,
+        .srcStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
+        .dstStageMask = VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT,
+        .srcAccessMask = VK_ACCESS_COLOR_ATTACHMENT_READ_BIT |
+                         VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT,
+        .dstAccessMask = VK_ACCESS_MEMORY_READ_BIT,
+        .dependencyFlags = VK_DEPENDENCY_BY_REGION_BIT,
+    };
+    VkSubpassDependency dependencies[2] = {
+        dependency_start, dependency_end
     };
 
     VkRenderPassCreateInfo render_pass_info = {
@@ -737,13 +731,47 @@ static void render_swapchain_dependent_init(Render* self)
         .pAttachments = attachments,
         .subpassCount = 1,
         .pSubpasses = &subpass,
-        .dependencyCount = 1,
-        .pDependencies = &dependency,
+        .dependencyCount = 2,
+        .pDependencies = dependencies,
     };
 
     if (vkCreateRenderPass(
            self->device, &render_pass_info, NULL, &self->render_pass) !=
            VK_SUCCESS) fatal("Failed to create render pass.");
+
+    // CREATE DEPTH IMAGE
+    create_2d_image(self->physical_device, self->device, self->swapchain_extent.width,
+            self->swapchain_extent.height, VK_SAMPLE_COUNT_1_BIT, depth_format,
+            VK_IMAGE_TILING_OPTIMAL, VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT,
+            VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, &self->depth_image,
+            &self->depth_image_memory);
+    create_2d_image_view(self->device, self->depth_image, depth_format,
+            VK_IMAGE_ASPECT_DEPTH_BIT,
+            &self->depth_image_view);
+
+    // CREATE FRAMEBUFFERS
+    for (size_t i = 0; i < FRAMES_IN_FLIGHT; ++i) {
+        enum { attachment_count = 2 };
+        VkImageView attachments[attachment_count] = {
+            self->swapchain_image_views[i],
+            self->depth_image_view,
+        };
+
+        VkFramebufferCreateInfo framebuffer_info = {
+            .sType = VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO,
+            .renderPass = self->render_pass,
+            .attachmentCount = attachment_count,
+            .pAttachments = attachments,
+            .width = self->swapchain_extent.width,
+            .height = self->swapchain_extent.height,
+            .layers = 1,
+        };
+
+        if (vkCreateFramebuffer(self->device, &framebuffer_info, NULL,
+                &self->framebuffers[i]) != VK_SUCCESS) {
+            fatal("Failed to create framebuffer.");
+        }
+    }
 
     // CREATE GRAPHICS PIPELINE
     char *vertex_shader_code; 
@@ -859,7 +887,7 @@ static void render_swapchain_dependent_init(Render* self)
     const VkPipelineMultisampleStateCreateInfo multisampling = {
         .sType = VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO,
         .sampleShadingEnable = VK_FALSE,
-        .rasterizationSamples = SAMPLE_COUNT,
+        .rasterizationSamples = VK_SAMPLE_COUNT_1_BIT,
     };
 
     const VkPipelineColorBlendAttachmentState color_blend_attachment = {
@@ -919,48 +947,13 @@ static void render_swapchain_dependent_init(Render* self)
 
     // CREATE COLOR IMAGE
     create_2d_image(self->physical_device, self->device, self->swapchain_extent.width,
-            self->swapchain_extent.height, SAMPLE_COUNT, self->swapchain_format,
+            self->swapchain_extent.height, VK_SAMPLE_COUNT_1_BIT, self->swapchain_format,
             VK_IMAGE_TILING_OPTIMAL, VK_IMAGE_USAGE_TRANSIENT_ATTACHMENT_BIT |
             VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT,
             VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, &self->color_image,
             &self->color_image_memory);
     create_2d_image_view(self->device, self->color_image, self->swapchain_format, VK_IMAGE_ASPECT_COLOR_BIT,
             &self->color_image_view);
-
-    // CREATE DEPTH IMAGE
-    create_2d_image(self->physical_device, self->device, self->swapchain_extent.width,
-            self->swapchain_extent.height, SAMPLE_COUNT, depth_format,
-            VK_IMAGE_TILING_OPTIMAL, VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT,
-            VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, &self->depth_image,
-            &self->depth_image_memory);
-    create_2d_image_view(self->device, self->depth_image, depth_format,
-            VK_IMAGE_ASPECT_DEPTH_BIT,
-            &self->depth_image_view);
-
-    // CREATE FRAMEBUFFERS
-    for (size_t i = 0; i < FRAMES_IN_FLIGHT; ++i) {
-        enum { attachment_count = 3 };
-        VkImageView attachments[attachment_count] = {
-            self->color_image_view,
-            self->depth_image_view,
-            self->swapchain_image_views[i]
-        };
-
-        VkFramebufferCreateInfo framebuffer_info = {
-            .sType = VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO,
-            .renderPass = self->render_pass,
-            .attachmentCount = attachment_count,
-            .pAttachments = attachments,
-            .width = self->swapchain_extent.width,
-            .height = self->swapchain_extent.height,
-            .layers = 1,
-        };
-
-        if (vkCreateFramebuffer(self->device, &framebuffer_info, NULL,
-                &self->framebuffers[i]) != VK_SUCCESS) {
-            fatal("Failed to create framebuffer.");
-        }
-    }
 
     // CREATE DESCRIPTOR POOLS
     // TODO rewrite to be more specific
