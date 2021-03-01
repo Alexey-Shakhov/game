@@ -25,6 +25,9 @@
 
 extern GLFWwindow* g_window;
 
+VkPhysicalDevice g_physical_device;
+VkDevice g_device;
+
 // Scene structs
 typedef struct Primitive {
     VkDescriptorSet texture;
@@ -67,28 +70,22 @@ typedef struct PushConstants {
     mat4 model;
 } PushConstants;
 
-static void create_2d_image(VkPhysicalDevice physical_device,
-        VkDevice device, uint32_t width, uint32_t height,
+static void create_2d_image(uint32_t width, uint32_t height,
         VkSampleCountFlagBits samples, VkFormat format, VkImageTiling tiling,
         VkImageUsageFlags usage, VkMemoryPropertyFlags properties,
         VkImage* image, VkDeviceMemory* memory);
-static void create_2d_image_view(VkDevice device, VkImage image, VkFormat format,
+static void create_2d_image_view(VkImage image, VkFormat format,
         VkImageAspectFlags aspect_flags, VkImageView* image_view);
-static VkCommandBuffer begin_one_time_command_buffer(
-        VkDevice device, VkCommandPool command_pool);
-static void submit_one_time_command_buffer(VkDevice device, VkQueue queue,
+static VkCommandBuffer begin_one_time_command_buffer(VkCommandPool command_pool);
+static void submit_one_time_command_buffer(VkQueue queue,
         VkCommandBuffer command_buffer, VkCommandPool command_pool);
-static VkFormat find_depth_format(VkPhysicalDevice physical_device);
-static VkShaderModule create_shader_module(
-                    VkDevice device, const char* path);
+static VkFormat find_depth_format();
+static VkShaderModule create_shader_module(const char* path);
 static int find_memory_type(
-        VkPhysicalDevice physical_device,
         VkMemoryRequirements memory_requirements,
         VkMemoryPropertyFlags required_properties
 );
 static int create_buffer(
-        VkPhysicalDevice physical_device,
-        VkDevice device,
         size_t size, VkBufferUsageFlags usage,
         VkMemoryPropertyFlags properties, VkBuffer *buffer,
         VkDeviceMemory *bufferMemory);
@@ -96,8 +93,6 @@ static VkBuffer device_local_buffer_from_data(
         void* data,
         size_t size,
         VkBufferUsageFlags usage,
-        VkPhysicalDevice physical_device,
-        VkDevice device,
         VkQueue queue,
         VkCommandPool command_pool,
         VkDeviceMemory *o_memory
@@ -106,13 +101,10 @@ static void upload_to_device_local_buffer(
         void* data,
         size_t size,
         VkBuffer destination,
-        VkPhysicalDevice physical_device,
-        VkDevice device,
         VkQueue queue,
         VkCommandPool command_pool
 );
-static VkBuffer upload_data_to_staging_buffer(
-    VkPhysicalDevice physical_device, VkDevice device, void* data,
+static VkBuffer upload_data_to_staging_buffer(void* data,
     size_t size, VkDeviceMemory* staging_buffer_memory);
 
 enum { VALIDATION_ENABLED = 1 };
@@ -132,9 +124,8 @@ typedef struct Attachment {
     VkDeviceMemory memory;
 } Attachment;
 
-void create_attachment(Attachment* att, VkPhysicalDevice physical_device,
-        VkDevice device, uint32_t width, uint32_t height, VkFormat format,
-        VkImageUsageFlags usage)
+void create_attachment(Attachment* att, uint32_t width, uint32_t height,
+        VkFormat format, VkImageUsageFlags usage)
 {
     VkImageAspectFlags aspect_mask = 0;
     if (usage == VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT) {
@@ -143,19 +134,24 @@ void create_attachment(Attachment* att, VkPhysicalDevice physical_device,
         aspect_mask |= VK_IMAGE_ASPECT_COLOR_BIT;
     };
 
-    create_2d_image(physical_device, device, width, height, VK_SAMPLE_COUNT_1_BIT, format,
+    create_2d_image(width, height, VK_SAMPLE_COUNT_1_BIT, format,
         VK_IMAGE_TILING_OPTIMAL, usage, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
         &att->image, &att->memory);
-    create_2d_image_view(device, att->image, format, aspect_mask, &att->view);
+    create_2d_image_view(att->image, format, aspect_mask, &att->view);
+}
+
+void destroy_attachment(Attachment* att)
+{
+    vkDestroyImageView(g_device, att->view, NULL);
+    vkDestroyImage(g_device, att->image, NULL);
+    vkFreeMemory(g_device, att->memory, NULL);
 }
 
 typedef struct Render {
     VkInstance instance;
     VkSurfaceKHR surface;
-    VkPhysicalDevice physical_device;
     uint32_t graphics_family;
     uint32_t present_family;
-    VkDevice device;
     VkQueue graphics_queue;
     VkQueue present_queue;
     VkSwapchainKHR swapchain;
@@ -165,7 +161,7 @@ typedef struct Render {
     VkImageView swapchain_image_views[FRAMES_IN_FLIGHT];
     VkRenderPass render_pass;
     VkRenderPass offscreen_render_pass;
-    VkDescriptorSetLayout view_proj_set_layout;
+    VkDescriptorSetLayout ubo_set_layout;
     VkDescriptorSetLayout texture_set_layout;
     VkPipelineLayout graphics_pipeline_layout;
     VkPipeline graphics_pipeline;
@@ -192,18 +188,19 @@ typedef struct Render {
     VkBuffer index_buffer;
     VkDeviceMemory index_buffer_memory;
 
-    VkBuffer view_proj_buffers[FRAMES_IN_FLIGHT];
-    VkDeviceMemory view_proj_buffers_memories[FRAMES_IN_FLIGHT];
+    VkBuffer ubo_buffers[FRAMES_IN_FLIGHT];
+    VkDeviceMemory ubo_buffers_memories[FRAMES_IN_FLIGHT];
 
     VkSampler texture_sampler;
 
-    VkDescriptorSet view_proj_sets[FRAMES_IN_FLIGHT];
+    VkDescriptorSet ubo_sets[FRAMES_IN_FLIGHT];
     VkDescriptorSet texture_sets[FRAMES_IN_FLIGHT];
 
     VkCommandBuffer command_buffers[FRAMES_IN_FLIGHT];
 
     VkFence commands_executed_fences[FRAMES_IN_FLIGHT];
     VkSemaphore image_available_semaphores[FRAMES_IN_FLIGHT];
+    VkSemaphore mrt_finished_semaphores[FRAMES_IN_FLIGHT];
     VkSemaphore draw_finished_semaphores[FRAMES_IN_FLIGHT];
 
     size_t current_frame;
@@ -280,17 +277,17 @@ Render* render_init() {
     int graphics;
     int present;
     for (size_t i=0; i < dev_count; i++) {
-        VkPhysicalDevice device = devices[i];
+        VkPhysicalDevice g_device = devices[i];
 
         // Find graphics and present queue families
         // TODO use a specialized transfer queue
         uint32_t queue_family_count;
         vkGetPhysicalDeviceQueueFamilyProperties(
-                device, &queue_family_count, NULL);
+                g_device, &queue_family_count, NULL);
         VkQueueFamilyProperties *queue_families =
            malloc_nofail(sizeof(VkQueueFamilyProperties) * queue_family_count);
         vkGetPhysicalDeviceQueueFamilyProperties(
-                                 device, &queue_family_count, queue_families);
+                                 g_device, &queue_family_count, queue_families);
 
         graphics = -1;
         for (int j=0; j < queue_family_count; j++) {
@@ -306,7 +303,7 @@ Render* render_init() {
         for (int j=0; j < queue_family_count; j++) {
             VkBool32 present_support = VK_FALSE;
             vkGetPhysicalDeviceSurfaceSupportKHR(
-                                device, j, self->surface, &present_support);
+                                g_device, j, self->surface, &present_support);
 
             if (present_support == VK_TRUE) {
                 present = j;
@@ -320,11 +317,11 @@ Render* render_init() {
 
         // Check if neccessary extensions are supported
         uint32_t ext_count;
-        vkEnumerateDeviceExtensionProperties(device, NULL, &ext_count, NULL);
+        vkEnumerateDeviceExtensionProperties(g_device, NULL, &ext_count, NULL);
         VkExtensionProperties *available_extensions =
                        malloc_nofail(sizeof(VkExtensionProperties) * ext_count);
         vkEnumerateDeviceExtensionProperties(
-                               device, NULL, &ext_count, available_extensions);
+                               g_device, NULL, &ext_count, available_extensions);
 
         bool extensions_supported = true;
         for (int j=0; j < DEVICE_EXTENSION_COUNT; j++) {
@@ -349,32 +346,32 @@ Render* render_init() {
         // TODO check for actual needed format
         uint32_t format_count;
         vkGetPhysicalDeviceSurfaceFormatsKHR(
-                                device, self->surface, &format_count, NULL);
+                                g_device, self->surface, &format_count, NULL);
         if (format_count == 0) continue;
 
         // Make sure that present mode count isn't 0
         // TODO check for actual needed present mode
         uint32_t present_mode_count;
         vkGetPhysicalDeviceSurfacePresentModesKHR(
-                            device, self->surface, &present_mode_count, NULL);
+                            g_device, self->surface, &present_mode_count, NULL);
         if (present_mode_count == 0) continue;
 
         // Multisampling
         VkPhysicalDeviceFeatures supported_features;
-        vkGetPhysicalDeviceFeatures(device, &supported_features);
+        vkGetPhysicalDeviceFeatures(g_device, &supported_features);
         if (!supported_features.samplerAnisotropy) continue;
 
-        result = device;
+        result = g_device;
         break;
     }
 
     mem_free(devices); 
     if (result == VK_NULL_HANDLE) {
-        fatal("Failed to find a suitable physical device.");
+        fatal("Failed to find a suitable physical g_device.");
     } else {
         self->graphics_family = (uint32_t) graphics;
         self->present_family = (uint32_t) present;
-        self->physical_device = result;
+        g_physical_device = result;
     }
 
     // CREATE LOGICAL DEVICE
@@ -423,13 +420,13 @@ Render* render_init() {
     };
 
     if (vkCreateDevice(
-            self->physical_device, &device_create_info, NULL, &self->device) !=
-            VK_SUCCESS) fatal("Failed to create logical device.");
+            g_physical_device, &device_create_info, NULL, &g_device) !=
+            VK_SUCCESS) fatal("Failed to create logical g_device.");
 
     vkGetDeviceQueue(
-        self->device, self->graphics_family, 0, &self->graphics_queue);
+        g_device, self->graphics_family, 0, &self->graphics_queue);
     vkGetDeviceQueue(
-        self->device, self->present_family, 0, &self->present_queue);
+        g_device, self->present_family, 0, &self->present_queue);
     mem_free(queue_create_infos);
 
     // CREATE COMMAND POOL
@@ -438,7 +435,7 @@ Render* render_init() {
         .queueFamilyIndex = self->graphics_family,
         .flags = VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT,
     };
-    if (vkCreateCommandPool(self->device, &pool_info, NULL, 
+    if (vkCreateCommandPool(g_device, &pool_info, NULL, 
             &self->graphics_command_pool) != VK_SUCCESS) {
         fatal("Failed to create command pool.");
     }
@@ -466,25 +463,25 @@ Render* render_init() {
         .mipLodBias = 0.0f,
     };
 
-    if (vkCreateSampler(self->device, &texture_sampler_info, NULL,
+    if (vkCreateSampler(g_device, &texture_sampler_info, NULL,
                 &self->texture_sampler) != VK_SUCCESS) {
         fatal("Failed to create texture sampler.");
     }
 
     // CREATE DESCRIPTOR SET LAYOUTS AND PIPELINE LAYOUT
-    VkDescriptorSetLayoutBinding view_proj_binding = {
+    VkDescriptorSetLayoutBinding ubo_binding = {
         .binding = 0,
         .descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
         .descriptorCount = 1,
         .stageFlags = VK_SHADER_STAGE_VERTEX_BIT,
     };
-    VkDescriptorSetLayoutCreateInfo view_proj_set_info = {
+    VkDescriptorSetLayoutCreateInfo ubo_set_info = {
         .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO,
         .bindingCount = 1,
-        .pBindings = &view_proj_binding,
+        .pBindings = &ubo_binding,
     };
-    if (vkCreateDescriptorSetLayout(self->device, &view_proj_set_info, NULL,
-            &self->view_proj_set_layout) != VK_SUCCESS) {
+    if (vkCreateDescriptorSetLayout(g_device, &ubo_set_info, NULL,
+            &self->ubo_set_layout) != VK_SUCCESS) {
         fatal("Failed to create view-projection descriptor set layout.");
     }
 
@@ -499,7 +496,7 @@ Render* render_init() {
         .bindingCount = 1,
         .pBindings = &texture_sampler_binding,
     };
-    if (vkCreateDescriptorSetLayout(self->device, &texture_set_info, NULL,
+    if (vkCreateDescriptorSetLayout(g_device, &texture_set_info, NULL,
             &self->texture_set_layout) != VK_SUCCESS) {
         fatal("Failed to create texture descriptor set layout.");
     }
@@ -511,7 +508,7 @@ Render* render_init() {
     };
 
     VkDescriptorSetLayout set_layouts[2] = {
-        self->view_proj_set_layout, self->texture_set_layout,
+        self->ubo_set_layout, self->texture_set_layout,
     };
 
     const VkPipelineLayoutCreateInfo pipeline_layout_info = {
@@ -523,7 +520,7 @@ Render* render_init() {
     };
     VkPipelineLayout pipeline_layout;
     if (vkCreatePipelineLayout(
-                            self->device,
+                            g_device,
                             &pipeline_layout_info,
                             NULL,
                             &self->graphics_pipeline_layout) != VK_SUCCESS) {
@@ -539,11 +536,13 @@ Render* render_init() {
         .flags = VK_FENCE_CREATE_SIGNALED_BIT,
     };
     for (size_t i = 0; i < FRAMES_IN_FLIGHT; i++) {
-        vkCreateSemaphore(self->device, &semaphore_info, NULL,
+        vkCreateSemaphore(g_device, &semaphore_info, NULL,
                 &self->image_available_semaphores[i]);
-        vkCreateSemaphore(self->device, &semaphore_info, NULL,
+        vkCreateSemaphore(g_device, &semaphore_info, NULL,
+                &self->mrt_finished_semaphores[i]);
+        vkCreateSemaphore(g_device, &semaphore_info, NULL,
                 &self->draw_finished_semaphores[i]);
-        vkCreateFence(self->device, &fence_info, NULL,
+        vkCreateFence(g_device, &fence_info, NULL,
                 &self->commands_executed_fences[i]);
     }
 
@@ -557,11 +556,11 @@ static void render_swapchain_dependent_init(Render* self)
     // Choose swap surface format
     uint32_t format_count;
     vkGetPhysicalDeviceSurfaceFormatsKHR(
-                    self->physical_device, self->surface, &format_count, NULL);
+                    g_physical_device, self->surface, &format_count, NULL);
     VkSurfaceFormatKHR *const formats = 
             malloc_nofail(sizeof(VkSurfaceFormatKHR) * format_count);
     vkGetPhysicalDeviceSurfaceFormatsKHR(
-                self->physical_device, self->surface, &format_count, formats);
+                g_physical_device, self->surface, &format_count, formats);
 
     VkSurfaceFormatKHR format;
     bool format_found = false;
@@ -589,11 +588,11 @@ static void render_swapchain_dependent_init(Render* self)
     // Choose present mode
     uint32_t present_mode_count;
     vkGetPhysicalDeviceSurfacePresentModesKHR(
-            self->physical_device, self->surface, &present_mode_count, NULL);
+            g_physical_device, self->surface, &present_mode_count, NULL);
     VkPresentModeKHR* present_modes =
         malloc_nofail(sizeof(VkPresentModeKHR) * present_mode_count);
     vkGetPhysicalDeviceSurfacePresentModesKHR(
-        self->physical_device, self->surface, &present_mode_count, present_modes);
+        g_physical_device, self->surface, &present_mode_count, present_modes);
 
     VkPresentModeKHR present_mode = VK_PRESENT_MODE_FIFO_KHR;
     for (size_t i=0; i < present_mode_count; i++) {
@@ -609,7 +608,7 @@ static void render_swapchain_dependent_init(Render* self)
     // Choose swap extent
     VkSurfaceCapabilitiesKHR capabilities;
     vkGetPhysicalDeviceSurfaceCapabilitiesKHR(
-                            self->physical_device, self->surface, &capabilities);
+                            g_physical_device, self->surface, &capabilities);
     VkExtent2D extent;
     if (capabilities.currentExtent.width != UINT32_MAX) {
         extent = capabilities.currentExtent;
@@ -664,18 +663,18 @@ static void render_swapchain_dependent_init(Render* self)
     }
 
     if (vkCreateSwapchainKHR(
-            self->device, &swapchain_create_info, NULL, &self->swapchain) != VK_SUCCESS) {
+            g_device, &swapchain_create_info, NULL, &self->swapchain) != VK_SUCCESS) {
         fatal("Failed to create swapchain.");
     }
 
     uint32_t image_count;
-    vkGetSwapchainImagesKHR(self->device, self->swapchain, &image_count, NULL);
+    vkGetSwapchainImagesKHR(g_device, self->swapchain, &image_count, NULL);
     DBASSERT(image_count == FRAMES_IN_FLIGHT);
     vkGetSwapchainImagesKHR(
-          self->device, self->swapchain, &image_count, self->swapchain_images);
+          g_device, self->swapchain, &image_count, self->swapchain_images);
 
     for (uint32_t i=0; i < FRAMES_IN_FLIGHT; i++) {
-        create_2d_image_view(self->device, self->swapchain_images[i],
+        create_2d_image_view(self->swapchain_images[i],
             self->swapchain_format, VK_IMAGE_ASPECT_COLOR_BIT,
             &self->swapchain_image_views[i]);
     }
@@ -692,7 +691,7 @@ static void render_swapchain_dependent_init(Render* self)
         .finalLayout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR,
     };
 
-    VkFormat depth_format = find_depth_format(self->physical_device);
+    VkFormat depth_format = find_depth_format();
     struct VkAttachmentDescription depth_attachment = {
         .format = depth_format,
         .samples = VK_SAMPLE_COUNT_1_BIT,
@@ -759,15 +758,15 @@ static void render_swapchain_dependent_init(Render* self)
     };
 
     if (vkCreateRenderPass(
-           self->device, &render_pass_info, NULL, &self->render_pass) !=
+           g_device, &render_pass_info, NULL, &self->render_pass) !=
            VK_SUCCESS) fatal("Failed to create render pass.");
 
-    create_2d_image(self->physical_device, self->device, self->swapchain_extent.width,
+    create_2d_image(self->swapchain_extent.width,
             self->swapchain_extent.height, VK_SAMPLE_COUNT_1_BIT, depth_format,
             VK_IMAGE_TILING_OPTIMAL, VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT,
             VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, &self->depth_att.image,
             &self->depth_att.memory);
-    create_2d_image_view(self->device, self->depth_att.image, depth_format,
+    create_2d_image_view(self->depth_att.image, depth_format,
             VK_IMAGE_ASPECT_DEPTH_BIT,
             &self->depth_att.view);
 
@@ -786,7 +785,7 @@ static void render_swapchain_dependent_init(Render* self)
             .layers = 1,
         };
 
-        if (vkCreateFramebuffer(self->device, &framebuffer_info, NULL,
+        if (vkCreateFramebuffer(g_device, &framebuffer_info, NULL,
                 &self->framebuffers[i]) != VK_SUCCESS) {
             fatal("Failed to create framebuffer.");
         }
@@ -863,20 +862,16 @@ static void render_swapchain_dependent_init(Render* self)
     };
 
     if (vkCreateRenderPass(
-           self->device, &offscreen_render_pass_info, NULL, &self->offscreen_render_pass) !=
+           g_device, &offscreen_render_pass_info, NULL, &self->offscreen_render_pass) !=
            VK_SUCCESS) fatal("Failed to create render pass.");
 
-    create_attachment(&self->offscreen_depth, self->physical_device,
-        self->device, self->swapchain_extent.width, self->swapchain_extent.height,
+    create_attachment(&self->offscreen_depth, self->swapchain_extent.width,self->swapchain_extent.height,
         depth_format, VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT);
-    create_attachment(&self->offscreen_position, self->physical_device,
-        self->device, self->swapchain_extent.width, self->swapchain_extent.height,
+    create_attachment(&self->offscreen_position, self->swapchain_extent.width, self->swapchain_extent.height,
         position_attachment.format, VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT);
-    create_attachment(&self->offscreen_albedo, self->physical_device,
-        self->device, self->swapchain_extent.width, self->swapchain_extent.height,
+    create_attachment(&self->offscreen_albedo, self->swapchain_extent.width, self->swapchain_extent.height,
         albedo_attachment.format, VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT);
-    create_attachment(&self->offscreen_normal, self->physical_device,
-        self->device, self->swapchain_extent.width, self->swapchain_extent.height,
+    create_attachment(&self->offscreen_normal, self->swapchain_extent.width, self->swapchain_extent.height,
         normal_attachment.format, VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT);
 
     VkImageView offscreen_attachments[4] = {
@@ -895,7 +890,7 @@ static void render_swapchain_dependent_init(Render* self)
         .layers = 1,
     };
 
-    if (vkCreateFramebuffer(self->device, &offscreen_framebuffer_info, NULL,
+    if (vkCreateFramebuffer(g_device, &offscreen_framebuffer_info, NULL,
             &self->offscreen_framebuffer) != VK_SUCCESS) {
         fatal("Failed to create framebuffer.");
     }
@@ -974,9 +969,9 @@ static void render_swapchain_dependent_init(Render* self)
     rasterizer.cullMode = VK_CULL_MODE_FRONT_BIT;
 
     VkShaderModule deferred_vertex_shader = create_shader_module(
-                    self->device, "./shaders/deferred.vert.spv");
+                    "./shaders/deferred.vert.spv");
     VkShaderModule deferred_fragment_shader = create_shader_module(
-                self->device, "./shaders/deferred.frag.spv");
+                "./shaders/deferred.frag.spv");
 
     struct VkPipelineShaderStageCreateInfo vertex_shader_stage_info = {
         .sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
@@ -1016,7 +1011,7 @@ static void render_swapchain_dependent_init(Render* self)
     };
 
     if (vkCreateGraphicsPipelines(
-                              self->device,
+                              g_device,
                               VK_NULL_HANDLE,
                               1,
                               &pipeline_info,
@@ -1025,14 +1020,14 @@ static void render_swapchain_dependent_init(Render* self)
         fatal("Failed to create graphics pipeline.");
     }
 
-    vkDestroyShaderModule(self->device, deferred_fragment_shader, NULL);
-    vkDestroyShaderModule(self->device, deferred_vertex_shader, NULL);
+    vkDestroyShaderModule(g_device, deferred_fragment_shader, NULL);
+    vkDestroyShaderModule(g_device, deferred_vertex_shader, NULL);
 
     // G-buffer write pipeline
     rasterizer.cullMode = VK_CULL_MODE_BACK_BIT;
 
-    shader_stages[0].module = create_shader_module(self->device, "./shaders/mrt.vert.spv");
-    shader_stages[1].module = create_shader_module(self->device, "./shaders/mrt.frag.spv");
+    shader_stages[0].module = create_shader_module("./shaders/mrt.vert.spv");
+    shader_stages[1].module = create_shader_module("./shaders/mrt.frag.spv");
 
     VkVertexInputBindingDescription vertex_input_binding_description = {
         .binding = 0,
@@ -1075,7 +1070,7 @@ static void render_swapchain_dependent_init(Render* self)
     color_blending.pAttachments = blend_states;
 
     if (vkCreateGraphicsPipelines(
-                          self->device,
+                          g_device,
                           VK_NULL_HANDLE,
                           1,
                           &pipeline_info,
@@ -1085,13 +1080,13 @@ static void render_swapchain_dependent_init(Render* self)
     }
 
     // CREATE COLOR IMAGE
-    create_2d_image(self->physical_device, self->device, self->swapchain_extent.width,
+    create_2d_image(self->swapchain_extent.width,
             self->swapchain_extent.height, VK_SAMPLE_COUNT_1_BIT, self->swapchain_format,
             VK_IMAGE_TILING_OPTIMAL, VK_IMAGE_USAGE_TRANSIENT_ATTACHMENT_BIT |
             VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT,
             VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, &self->color_att.image,
             &self->color_att.memory);
-    create_2d_image_view(self->device, self->color_att.image, self->swapchain_format, VK_IMAGE_ASPECT_COLOR_BIT,
+    create_2d_image_view(self->color_att.image, self->swapchain_format, VK_IMAGE_ASPECT_COLOR_BIT,
             &self->color_att.view);
 
     // CREATE DESCRIPTOR POOLS
@@ -1113,7 +1108,7 @@ static void render_swapchain_dependent_init(Render* self)
         .maxSets = FRAMES_IN_FLIGHT,
     };
     if (vkCreateDescriptorPool(
-            self->device, &pool_info, NULL, &self->descriptor_pool)
+            g_device, &pool_info, NULL, &self->descriptor_pool)
             != VK_SUCCESS) {
         fatal("Failed to create descriptor pool.");
     }
@@ -1130,7 +1125,7 @@ static void render_swapchain_dependent_init(Render* self)
         .maxSets = MAX_TEXTURES,
     };
     if (vkCreateDescriptorPool(
-            self->device, &texture_pool_info, NULL, &self->texture_descriptor_pool)
+            g_device, &texture_pool_info, NULL, &self->texture_descriptor_pool)
             != VK_SUCCESS) {
         fatal("Failed to create texture descriptor pool.");
     }
@@ -1138,14 +1133,12 @@ static void render_swapchain_dependent_init(Render* self)
     // CREATE UNIFORM BUFFERS
     for (uint32_t i=0; i < FRAMES_IN_FLIGHT; i++) {
         create_buffer(
-                self->physical_device,
-                self->device,
                 sizeof(Uniform),
                 VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT |
                         VK_BUFFER_USAGE_TRANSFER_DST_BIT,
                 VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
-                &self->view_proj_buffers[i],
-                &self->view_proj_buffers_memories[i]
+                &self->ubo_buffers[i],
+                &self->ubo_buffers_memories[i]
         );
     }
 
@@ -1156,11 +1149,11 @@ static void render_swapchain_dependent_init(Render* self)
         .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO,
         .descriptorPool = self->descriptor_pool,
         .descriptorSetCount = 1,
-        .pSetLayouts = &self->view_proj_set_layout,
+        .pSetLayouts = &self->ubo_set_layout,
     };
     for (size_t i=0; i < FRAMES_IN_FLIGHT; i++) {
         if (vkAllocateDescriptorSets(
-                self->device, &desc_set_alloc_info, &self->view_proj_sets[i]
+                g_device, &desc_set_alloc_info, &self->ubo_sets[i]
                 ) != VK_SUCCESS) {
             fatal("Failed to allocate descriptor sets.");
         }
@@ -1174,7 +1167,7 @@ static void render_swapchain_dependent_init(Render* self)
         .level = VK_COMMAND_BUFFER_LEVEL_PRIMARY,
         .commandBufferCount = 2,
     };
-    if (vkAllocateCommandBuffers(self->device, &cmdbuf_allocate_info,
+    if (vkAllocateCommandBuffers(g_device, &cmdbuf_allocate_info,
             self->command_buffers) != VK_SUCCESS) {
         fatal("Failed to allocate command buffers.");
     }
@@ -1196,16 +1189,14 @@ void render_draw_frame(Render* self, vec3 cam_pos, vec3 cam_dir, vec3 cam_up) {
     upload_to_device_local_buffer(
             (void*) &uniform,
             sizeof(uniform),
-            self->view_proj_buffers[current_frame],
-            self->physical_device,
-            self->device,
+            self->ubo_buffers[current_frame],
             self->graphics_queue,
             self->graphics_command_pool
     );
 
     uint32_t image_index;
     VkResult acquire_image_result =
-        vkAcquireNextImageKHR(self->device, self->swapchain, UINT64_MAX,
+        vkAcquireNextImageKHR(g_device, self->swapchain, UINT64_MAX,
                 self->image_available_semaphores[current_frame], VK_NULL_HANDLE,
                 &image_index);
 
@@ -1218,7 +1209,7 @@ void render_draw_frame(Render* self, vec3 cam_pos, vec3 cam_dir, vec3 cam_up) {
     }
 
     vkWaitForFences(
-            self->device, 1, &self->commands_executed_fences[current_frame],
+            g_device, 1, &self->commands_executed_fences[current_frame],
             VK_TRUE, UINT64_MAX);
     VkCommandBufferBeginInfo begin_info = {
         .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
@@ -1256,7 +1247,7 @@ void render_draw_frame(Render* self, vec3 cam_pos, vec3 cam_dir, vec3 cam_up) {
             VK_INDEX_TYPE_UINT16);
     vkCmdBindDescriptorSets(self->command_buffers[current_frame],
             VK_PIPELINE_BIND_POINT_GRAPHICS, self->graphics_pipeline_layout,
-            0, 1, &self->view_proj_sets[current_frame], 0, NULL);
+            0, 1, &self->ubo_sets[current_frame], 0, NULL);
 
     // Draw the nodes
     for (size_t n=0; n < g_nodes_count; n++) {
@@ -1311,7 +1302,7 @@ void render_draw_frame(Render* self, vec3 cam_pos, vec3 cam_dir, vec3 cam_up) {
         .pSignalSemaphores = &self->draw_finished_semaphores[current_frame],
     };
 
-    vkResetFences(self->device, 1, &self->commands_executed_fences[current_frame]);
+    vkResetFences(g_device, 1, &self->commands_executed_fences[current_frame]);
 
     if (vkQueueSubmit(self->graphics_queue, 1, &submit_info,
             self->commands_executed_fences[current_frame]) != VK_SUCCESS) {
@@ -1356,15 +1347,13 @@ static void load_texture(Render* self, void* buffer, size_t len,
 
     // Upload pixels to staging buffer
     VkDeviceMemory texture_staging_memory;
-    VkBuffer texture_staging = upload_data_to_staging_buffer(
-        self->physical_device, self->device, pixels, image_size,
+    VkBuffer texture_staging = upload_data_to_staging_buffer(pixels, image_size,
         &texture_staging_memory);
 
     stbi_image_free(pixels);
 
     // Create texture image
-    create_2d_image(
-            self->physical_device, self->device, tex_width, tex_height,
+    create_2d_image(tex_width, tex_height,
             VK_SAMPLE_COUNT_1_BIT, VK_FORMAT_R8G8B8A8_SRGB,
             VK_IMAGE_TILING_OPTIMAL,
             VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
@@ -1372,8 +1361,7 @@ static void load_texture(Render* self, void* buffer, size_t len,
 
     {
     // Transition image layout for upload
-    VkCommandBuffer cmdbuf = begin_one_time_command_buffer(
-            self->device, self->graphics_command_pool);
+    VkCommandBuffer cmdbuf = begin_one_time_command_buffer(self->graphics_command_pool);
     VkImageMemoryBarrier barrier = {
         .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
         .oldLayout = VK_IMAGE_LAYOUT_UNDEFINED,
@@ -1392,14 +1380,13 @@ static void load_texture(Render* self, void* buffer, size_t len,
     vkCmdPipelineBarrier(cmdbuf, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
             VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, NULL, 0, NULL, 1, &barrier);
     submit_one_time_command_buffer(
-            self->device, self->graphics_queue, cmdbuf,
+            self->graphics_queue, cmdbuf,
             self->graphics_command_pool);
     }
 
     {
     // Copy staging buffer to image
-    VkCommandBuffer cmdbuf = begin_one_time_command_buffer(
-            self->device, self->graphics_command_pool);
+    VkCommandBuffer cmdbuf = begin_one_time_command_buffer(self->graphics_command_pool);
     VkBufferImageCopy region = {
         .bufferOffset = 0,
         .bufferRowLength = 0,
@@ -1417,16 +1404,15 @@ static void load_texture(Render* self, void* buffer, size_t len,
     };
     vkCmdCopyBufferToImage(cmdbuf, texture_staging, *image,
             VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &region);
-    submit_one_time_command_buffer(self->device, self->graphics_queue, cmdbuf,
+    submit_one_time_command_buffer(self->graphics_queue, cmdbuf,
             self->graphics_command_pool);
 
-    vkDestroyBuffer(self->device, texture_staging, NULL);
-    vkFreeMemory(self->device, texture_staging_memory, NULL);
+    vkDestroyBuffer(g_device, texture_staging, NULL);
+    vkFreeMemory(g_device, texture_staging_memory, NULL);
     }
     {
     // Transition image layout for shader access
-    VkCommandBuffer cmdbuf = begin_one_time_command_buffer(
-            self->device, self->graphics_command_pool);
+    VkCommandBuffer cmdbuf = begin_one_time_command_buffer(self->graphics_command_pool);
     VkImageMemoryBarrier barrier = {
         .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
         .oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
@@ -1446,12 +1432,11 @@ static void load_texture(Render* self, void* buffer, size_t len,
             VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, 0, 0, NULL, 0, NULL, 1,
             &barrier);
     submit_one_time_command_buffer(
-            self->device, self->graphics_queue, cmdbuf,
+            self->graphics_queue, cmdbuf,
             self->graphics_command_pool);
     }
 
-    create_2d_image_view(
-            self->device, *image, VK_FORMAT_R8G8B8A8_SRGB,
+    create_2d_image_view(*image, VK_FORMAT_R8G8B8A8_SRGB,
             VK_IMAGE_ASPECT_COLOR_BIT, view);
 
     VkDescriptorSetAllocateInfo tex_set_alloc_info = {
@@ -1461,7 +1446,7 @@ static void load_texture(Render* self, void* buffer, size_t len,
         .pSetLayouts = &self->texture_set_layout,
     };
     if (vkAllocateDescriptorSets(
-            self->device, &tex_set_alloc_info, descriptor_set) != VK_SUCCESS) {
+            g_device, &tex_set_alloc_info, descriptor_set) != VK_SUCCESS) {
         fatal("Failed to allocate descriptor sets.");
     }
 
@@ -1479,7 +1464,7 @@ static void load_texture(Render* self, void* buffer, size_t len,
         .descriptorCount = 1,
         .pImageInfo = &texture_info,
     };
-    vkUpdateDescriptorSets(self->device, 1, &texture_write, 0, NULL);
+    vkUpdateDescriptorSets(g_device, 1, &texture_write, 0, NULL);
 }
 
 void render_upload_map_mesh(Render* self)
@@ -1684,8 +1669,6 @@ void render_upload_map_mesh(Render* self)
             (void*) vertices,
             sizeof(Vertex) * vertex_count,
             VK_BUFFER_USAGE_VERTEX_BUFFER_BIT,
-            self->physical_device,
-            self->device,
             self->graphics_queue,
             self->graphics_command_pool,
             &self->vertex_buffer_memory
@@ -1694,8 +1677,6 @@ void render_upload_map_mesh(Render* self)
             (void*) indices,
             sizeof(uint16_t) * index_count,
             VK_BUFFER_USAGE_INDEX_BUFFER_BIT,
-            self->physical_device,
-            self->device,
             self->graphics_queue,
             self->graphics_command_pool,
             &self->index_buffer_memory
@@ -1707,14 +1688,14 @@ void render_upload_map_mesh(Render* self)
 
     for (size_t i = 0; i < FRAMES_IN_FLIGHT; i++) {
         VkDescriptorBufferInfo buffer_info = {
-            .buffer = self->view_proj_buffers[i],
+            .buffer = self->ubo_buffers[i],
             .offset = 0,
             .range = sizeof(Uniform),
         };
 
         VkWriteDescriptorSet uniform_write = {
             .sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
-            .dstSet = self->view_proj_sets[i],
+            .dstSet = self->ubo_sets[i],
             .dstBinding = 0,
             .dstArrayElement = 0,
             .descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
@@ -1722,49 +1703,52 @@ void render_upload_map_mesh(Render* self)
             .pBufferInfo = &buffer_info,
         };
 
-        vkUpdateDescriptorSets(self->device, 1, &uniform_write, 0, NULL);
+        vkUpdateDescriptorSets(g_device, 1, &uniform_write, 0, NULL);
     }
 }
 
 static void cleanup_swapchain(Render* self)
 {
-    vkDestroyDescriptorPool(self->device, self->descriptor_pool, NULL);
+    vkDestroyDescriptorPool(g_device, self->descriptor_pool, NULL);
 
     for (size_t i=0; i < FRAMES_IN_FLIGHT; i++) {
         vkDestroySemaphore(
-                self->device, self->image_available_semaphores[i], NULL);
+                g_device, self->image_available_semaphores[i], NULL);
         vkDestroySemaphore(
-                self->device, self->draw_finished_semaphores[i], NULL);
-        vkDestroyFence(self->device, self->commands_executed_fences[i], NULL);
+                g_device, self->mrt_finished_semaphores[i], NULL);
+        vkDestroySemaphore(
+                g_device, self->draw_finished_semaphores[i], NULL);
+        vkDestroyFence(g_device, self->commands_executed_fences[i], NULL);
     }
 
     for (size_t i=0; i < FRAMES_IN_FLIGHT; i++) {
-        vkDestroyFramebuffer(self->device, self->framebuffers[i], NULL);
+        vkDestroyFramebuffer(g_device, self->framebuffers[i], NULL);
     }
     
-    vkDestroyImageView(self->device, self->depth_att.view, NULL);
-    vkDestroyImage(self->device, self->depth_att.image, NULL);
-    vkFreeMemory(self->device, self->depth_att.memory, NULL);
+    destroy_attachment(&self->depth_att);
+    destroy_attachment(&self->color_att);
+    destroy_attachment(&self->offscreen_position);
+    destroy_attachment(&self->offscreen_normal);
+    destroy_attachment(&self->offscreen_albedo);
+    destroy_attachment(&self->offscreen_depth);
 
-    vkDestroyImageView(self->device, self->color_att.view, NULL);
-    vkDestroyImage(self->device, self->color_att.image, NULL);
-    vkFreeMemory(self->device, self->color_att.memory, NULL);
+    vkDestroyPipeline(g_device, self->graphics_pipeline, NULL);
+    vkDestroyPipeline(g_device, self->offscreen_graphics_pipeline, NULL);
+    vkDestroyPipelineLayout(g_device, self->graphics_pipeline_layout, NULL);
 
-    vkDestroyPipeline(self->device, self->graphics_pipeline, NULL);
-    vkDestroyPipelineLayout(self->device, self->graphics_pipeline_layout, NULL);
-
-    vkDestroyRenderPass(self->device, self->render_pass, NULL);
+    vkDestroyRenderPass(g_device, self->render_pass, NULL);
+    vkDestroyRenderPass(g_device, self->offscreen_render_pass, NULL);
 
     for (uint32_t i=0; i < FRAMES_IN_FLIGHT; i++) {
-        vkDestroyImageView(self->device, self->swapchain_image_views[i], NULL);
+        vkDestroyImageView(g_device, self->swapchain_image_views[i], NULL);
     }
 
     for (size_t i=0; i < FRAMES_IN_FLIGHT; i++) {
-        vkDestroyBuffer(self->device, self->view_proj_buffers[i], NULL);
-        vkFreeMemory(self->device, self->view_proj_buffers_memories[i], NULL);
+        vkDestroyBuffer(g_device, self->ubo_buffers[i], NULL);
+        vkFreeMemory(g_device, self->ubo_buffers_memories[i], NULL);
     }
 
-    vkDestroySwapchainKHR(self->device, self->swapchain, NULL);
+    vkDestroySwapchainKHR(g_device, self->swapchain, NULL);
 }
 
 void render_destroy(Render* self)
@@ -1776,36 +1760,36 @@ void render_destroy(Render* self)
     }
     mem_free(g_meshes);
 
-    vkDeviceWaitIdle(self->device);
+    vkDeviceWaitIdle(g_device);
     cleanup_swapchain(self);
 
-    vkDestroySampler(self->device, self->texture_sampler, NULL);
-    vkDestroyDescriptorPool(self->device, self->texture_descriptor_pool, NULL);
+    vkDestroySampler(g_device, self->texture_sampler, NULL);
+    vkDestroyDescriptorPool(g_device, self->texture_descriptor_pool, NULL);
     for (size_t i=0; i < g_texture_count; i++) {     
-        vkDestroyImageView(self->device, g_texture_image_views[i], NULL);
-        vkDestroyImage(self->device, g_texture_images[i], NULL);
-        vkFreeMemory(self->device, g_texture_image_memories[i], NULL);
+        vkDestroyImageView(g_device, g_texture_image_views[i], NULL);
+        vkDestroyImage(g_device, g_texture_images[i], NULL);
+        vkFreeMemory(g_device, g_texture_image_memories[i], NULL);
     } 
     mem_free(g_texture_image_views);
     mem_free(g_texture_images);
     mem_free(g_texture_image_memories);
     mem_free(g_texture_descriptor_sets);
 
-    vkDestroyDescriptorSetLayout(self->device, self->view_proj_set_layout, NULL);
-    vkDestroyDescriptorSetLayout(self->device, self->texture_set_layout, NULL);
+    vkDestroyDescriptorSetLayout(g_device, self->ubo_set_layout, NULL);
+    vkDestroyDescriptorSetLayout(g_device, self->texture_set_layout, NULL);
 
     if (self->index_buffer != VK_NULL_HANDLE) {
-        vkDestroyBuffer(self->device, self->index_buffer, NULL);
-        vkFreeMemory(self->device, self->index_buffer_memory, NULL);
+        vkDestroyBuffer(g_device, self->index_buffer, NULL);
+        vkFreeMemory(g_device, self->index_buffer_memory, NULL);
     }
 
     if (self->vertex_buffer != VK_NULL_HANDLE) {
-        vkDestroyBuffer(self->device, self->vertex_buffer, NULL);
-        vkFreeMemory(self->device, self->vertex_buffer_memory, NULL);
+        vkDestroyBuffer(g_device, self->vertex_buffer, NULL);
+        vkFreeMemory(g_device, self->vertex_buffer_memory, NULL);
     }
 
-    vkDestroyCommandPool(self->device, self->graphics_command_pool, NULL);
-    vkDestroyDevice(self->device, NULL);
+    vkDestroyCommandPool(g_device, self->graphics_command_pool, NULL);
+    vkDestroyDevice(g_device, NULL);
     vkDestroySurfaceKHR(self->instance, self->surface, NULL);
     vkDestroyInstance(self->instance, NULL);
 
@@ -1815,7 +1799,7 @@ void render_destroy(Render* self)
     mem_free(self);
 }
 
-static void create_2d_image(VkPhysicalDevice physical_device, VkDevice device, uint32_t width, uint32_t height,
+static void create_2d_image(uint32_t width, uint32_t height,
         VkSampleCountFlagBits samples, VkFormat format, VkImageTiling tiling,
         VkImageUsageFlags usage, VkMemoryPropertyFlags properties,
         VkImage* image, VkDeviceMemory* memory)
@@ -1836,15 +1820,14 @@ static void create_2d_image(VkPhysicalDevice physical_device, VkDevice device, u
         .samples = samples,
     };
 
-    if (vkCreateImage(device, &image_create_info, NULL, image) != VK_SUCCESS) {
+    if (vkCreateImage(g_device, &image_create_info, NULL, image) != VK_SUCCESS) {
         fatal("Failed to create image.");
     }
 
     VkMemoryRequirements memory_requirements;
-    vkGetImageMemoryRequirements(device, *image, &memory_requirements);
+    vkGetImageMemoryRequirements(g_device, *image, &memory_requirements);
 
     int memory_type_index = find_memory_type(
-            physical_device,
             memory_requirements,
             VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT
     );
@@ -1858,13 +1841,13 @@ static void create_2d_image(VkPhysicalDevice physical_device, VkDevice device, u
         .memoryTypeIndex = (uint32_t) memory_type_index,
     };
 
-    if (vkAllocateMemory(device, &allocate_info, NULL, memory)
+    if (vkAllocateMemory(g_device, &allocate_info, NULL, memory)
             != VK_SUCCESS) fatal("Failed to allocate image memory.");
 
-    vkBindImageMemory(device, *image, *memory, 0);
+    vkBindImageMemory(g_device, *image, *memory, 0);
 }
 
-static void create_2d_image_view(VkDevice device, VkImage image, VkFormat format,
+static void create_2d_image_view(VkImage image, VkFormat format,
         VkImageAspectFlags aspect_flags, VkImageView* image_view)
 {
     VkImageViewCreateInfo create_info = {
@@ -1882,12 +1865,12 @@ static void create_2d_image_view(VkDevice device, VkImage image, VkFormat format
         .subresourceRange.baseArrayLayer = 0,
         .subresourceRange.layerCount = 1,
     };
-    if (vkCreateImageView(device, &create_info, NULL, image_view) != VK_SUCCESS) {
+    if (vkCreateImageView(g_device, &create_info, NULL, image_view) != VK_SUCCESS) {
         fatal("Failed to create image views.");
     }
 }
 
-static VkFormat find_depth_format(VkPhysicalDevice physical_device) {
+static VkFormat find_depth_format() {
     enum {candidate_count = 3};
     const VkFormat const candidates[candidate_count] = {
         VK_FORMAT_D32_SFLOAT,
@@ -1900,7 +1883,7 @@ static VkFormat find_depth_format(VkPhysicalDevice physical_device) {
     for (size_t i=0; i < candidate_count; i++) {
         VkFormatProperties properties;
         vkGetPhysicalDeviceFormatProperties(
-                physical_device, candidates[i], &properties);
+                g_physical_device, candidates[i], &properties);
         if (properties.optimalTilingFeatures &
                 VK_FORMAT_FEATURE_DEPTH_STENCIL_ATTACHMENT_BIT) {
             depth_format = candidates[i];
@@ -1912,8 +1895,7 @@ static VkFormat find_depth_format(VkPhysicalDevice physical_device) {
     return depth_format;
 }
 
-static VkShaderModule create_shader_module(
-                    VkDevice device, const char* path)
+static VkShaderModule create_shader_module(const char* path)
 {
     char *shader_code; 
     size_t shader_code_size; 
@@ -1929,7 +1911,7 @@ static VkShaderModule create_shader_module(
 
     VkShaderModule shader_module;
     if (vkCreateShaderModule(
-            device, &create_info, NULL, &shader_module) !=
+            g_device, &create_info, NULL, &shader_module) !=
             VK_SUCCESS) {
         fatal("Failed to create shader module.");
     }
@@ -1938,8 +1920,7 @@ static VkShaderModule create_shader_module(
     return shader_module;
 }
 
-static VkCommandBuffer begin_one_time_command_buffer(
-        VkDevice device, VkCommandPool command_pool)
+static VkCommandBuffer begin_one_time_command_buffer(VkCommandPool command_pool)
 {
     VkCommandBufferAllocateInfo allocate_info = {
         .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO,
@@ -1949,7 +1930,7 @@ static VkCommandBuffer begin_one_time_command_buffer(
     };
 
     VkCommandBuffer command_buffer;
-    vkAllocateCommandBuffers(device, &allocate_info, &command_buffer);
+    vkAllocateCommandBuffers(g_device, &allocate_info, &command_buffer);
 
     VkCommandBufferBeginInfo begin_info = {
         .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
@@ -1961,7 +1942,7 @@ static VkCommandBuffer begin_one_time_command_buffer(
     return command_buffer;
 }
 
-static void submit_one_time_command_buffer(VkDevice device, VkQueue queue,
+static void submit_one_time_command_buffer(VkQueue queue,
         VkCommandBuffer command_buffer, VkCommandPool command_pool)
 {
     vkEndCommandBuffer(command_buffer);
@@ -1976,16 +1957,15 @@ static void submit_one_time_command_buffer(VkDevice device, VkQueue queue,
 
     vkQueueWaitIdle(queue);
 
-    vkFreeCommandBuffers(device, command_pool, 1, &command_buffer);
+    vkFreeCommandBuffers(g_device, command_pool, 1, &command_buffer);
 }
 
 static int find_memory_type(
-        VkPhysicalDevice physical_device,
         VkMemoryRequirements memory_requirements,
         VkMemoryPropertyFlags required_properties
 ) { 
     VkPhysicalDeviceMemoryProperties memory_properties;
-    vkGetPhysicalDeviceMemoryProperties(physical_device, &memory_properties);
+    vkGetPhysicalDeviceMemoryProperties(g_physical_device, &memory_properties);
     int memory_type_index = -1;
     for (uint32_t i = 0; i < memory_properties.memoryTypeCount; i++) {
         if ((memory_requirements.memoryTypeBits & (1 << i)) &&
@@ -2000,8 +1980,6 @@ static int find_memory_type(
 
 // TODO straighten out shady return values
 static int create_buffer(
-        VkPhysicalDevice physical_device,
-        VkDevice device,
         size_t size, VkBufferUsageFlags usage,
         VkMemoryPropertyFlags properties, VkBuffer *buffer,
         VkDeviceMemory *bufferMemory)
@@ -2014,36 +1992,34 @@ static int create_buffer(
         .sharingMode = VK_SHARING_MODE_EXCLUSIVE,
     };
 
-    if (vkCreateBuffer(device, &buffer_info, NULL, buffer) != VK_SUCCESS) {
+    if (vkCreateBuffer(g_device, &buffer_info, NULL, buffer) != VK_SUCCESS) {
         return 1;
     }
 
     VkMemoryRequirements memory_requirements;
-    vkGetBufferMemoryRequirements(device, *buffer, &memory_requirements);
+    vkGetBufferMemoryRequirements(g_device, *buffer, &memory_requirements);
 
     VkMemoryAllocateInfo allocate_info = {
         .sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
         .allocationSize = memory_requirements.size,
         .memoryTypeIndex =
-            find_memory_type(physical_device, memory_requirements, properties),
+            find_memory_type(memory_requirements, properties),
     };
 
-    if (vkAllocateMemory(device, &allocate_info, NULL, bufferMemory)
+    if (vkAllocateMemory(g_device, &allocate_info, NULL, bufferMemory)
             != VK_SUCCESS) return 2;
 
-    vkBindBufferMemory(device, *buffer, *bufferMemory, 0);
+    vkBindBufferMemory(g_device, *buffer, *bufferMemory, 0);
     return 0;
 }
 
 static void copy_buffer(
-        VkDevice device,
         VkQueue queue,
         VkCommandPool command_pool,
         VkBuffer src_buffer, VkBuffer dst_buffer,
         VkDeviceSize device_size
 ) {
-    VkCommandBuffer command_buffer = begin_one_time_command_buffer(
-        device, command_pool);
+    VkCommandBuffer command_buffer = begin_one_time_command_buffer(command_pool);
 
     VkBufferCopy copy_region = {
         .srcOffset = 0,
@@ -2051,19 +2027,16 @@ static void copy_buffer(
         .size = device_size,
     };
     vkCmdCopyBuffer(command_buffer, src_buffer, dst_buffer, 1, &copy_region);
-    submit_one_time_command_buffer(device, queue, command_buffer, command_pool);
+    submit_one_time_command_buffer(queue, command_buffer, command_pool);
 }
 
-static VkBuffer upload_data_to_staging_buffer(
-    VkPhysicalDevice physical_device, VkDevice device, void* data,
+static VkBuffer upload_data_to_staging_buffer(void* data,
     size_t size, VkDeviceMemory* staging_buffer_memory)
 {
     VkDeviceSize device_size = size;
 
     VkBuffer staging_buffer;
     create_buffer(
-            physical_device,
-            device,
             size,
             VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
             // TODO use non-coherent memory with a flush
@@ -2075,10 +2048,10 @@ static VkBuffer upload_data_to_staging_buffer(
 
     void *staging_buffer_mapped;
     vkMapMemory(
-            device, *staging_buffer_memory, 0, device_size, 0,
+            g_device, *staging_buffer_memory, 0, device_size, 0,
             &staging_buffer_mapped);
     memcpy(staging_buffer_mapped, data, size);
-    vkUnmapMemory(device, *staging_buffer_memory);
+    vkUnmapMemory(g_device, *staging_buffer_memory);
     return staging_buffer;
 }
 
@@ -2086,31 +2059,26 @@ static void upload_to_device_local_buffer(
         void* data,
         size_t size,
         VkBuffer destination,
-        VkPhysicalDevice physical_device,
-        VkDevice device,
         VkQueue queue,
         VkCommandPool command_pool)
 {
     VkDeviceSize device_size = size;
     VkDeviceMemory staging_buffer_memory;
     VkBuffer staging_buffer = upload_data_to_staging_buffer(
-                physical_device, device, data, size, &staging_buffer_memory);
+                data, size, &staging_buffer_memory);
     copy_buffer(
-            device,
             queue,
             command_pool,
             staging_buffer, destination, device_size
     );
-    vkDestroyBuffer(device, staging_buffer, NULL);
-    vkFreeMemory(device, staging_buffer_memory, NULL);
+    vkDestroyBuffer(g_device, staging_buffer, NULL);
+    vkFreeMemory(g_device, staging_buffer_memory, NULL);
 }
 
 static VkBuffer device_local_buffer_from_data(
         void* data,
         size_t size,
         VkBufferUsageFlags usage,
-        VkPhysicalDevice physical_device,
-        VkDevice device,
         VkQueue queue,
         VkCommandPool command_pool,
         VkDeviceMemory *o_memory
@@ -2118,8 +2086,6 @@ static VkBuffer device_local_buffer_from_data(
     VkBuffer device_local_buffer;
     VkDeviceMemory device_local_buffer_memory;
     create_buffer(
-            physical_device,
-            device,
             size,
             VK_BUFFER_USAGE_TRANSFER_DST_BIT | usage,
             VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
@@ -2130,8 +2096,6 @@ static VkBuffer device_local_buffer_from_data(
             data,
             size,
             device_local_buffer,
-            physical_device,
-            device,
             queue,
             command_pool
     );
@@ -2149,7 +2113,7 @@ static void recreate_swapchain(Render* self)
         glfwWaitEvents();
     }
 
-    vkDeviceWaitIdle(self->device);
+    vkDeviceWaitIdle(g_device);
 
     cleanup_swapchain(self);
 
