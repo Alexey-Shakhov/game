@@ -133,6 +133,7 @@ void create_attachment(Attachment* att, uint32_t width, uint32_t height,
     } else {
         aspect_mask |= VK_IMAGE_ASPECT_COLOR_BIT;
     };
+    usage |= VK_IMAGE_USAGE_SAMPLED_BIT;
 
     create_2d_image(width, height, VK_SAMPLE_COUNT_1_BIT, format,
         VK_IMAGE_TILING_OPTIMAL, usage, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
@@ -161,8 +162,6 @@ typedef struct Render {
     VkImageView swapchain_image_views[FRAMES_IN_FLIGHT];
     VkRenderPass render_pass;
     VkRenderPass offscreen_render_pass;
-    VkDescriptorSetLayout ubo_set_layout;
-    VkDescriptorSetLayout texture_set_layout;
     VkPipelineLayout graphics_pipeline_layout;
     VkPipeline graphics_pipeline;
     VkPipeline offscreen_graphics_pipeline;
@@ -180,6 +179,7 @@ typedef struct Render {
     VkFramebuffer offscreen_framebuffer;
 
     VkDescriptorPool descriptor_pool;
+    VkDescriptorPool gbuf_descriptor_pool;
     VkDescriptorPool texture_descriptor_pool;
 
     VkBuffer vertex_buffer;
@@ -192,15 +192,20 @@ typedef struct Render {
     VkDeviceMemory ubo_buffers_memories[FRAMES_IN_FLIGHT];
 
     VkSampler texture_sampler;
+    VkSampler gbuf_sampler;
 
-    VkDescriptorSet ubo_sets[FRAMES_IN_FLIGHT];
-    VkDescriptorSet texture_sets[FRAMES_IN_FLIGHT];
+    VkDescriptorSetLayout desc_set_layout;
+    VkDescriptorSetLayout gbuf_desc_set_layout;
+    VkDescriptorSetLayout texture_set_layout;
+
+    VkDescriptorSet desc_sets[FRAMES_IN_FLIGHT];
+    VkDescriptorSet gbuf_desc_set;
+    VkDescriptorSet texture_sets[MAX_TEXTURES];
 
     VkCommandBuffer command_buffers[FRAMES_IN_FLIGHT];
 
     VkFence commands_executed_fences[FRAMES_IN_FLIGHT];
     VkSemaphore image_available_semaphores[FRAMES_IN_FLIGHT];
-    VkSemaphore mrt_finished_semaphores[FRAMES_IN_FLIGHT];
     VkSemaphore draw_finished_semaphores[FRAMES_IN_FLIGHT];
 
     size_t current_frame;
@@ -475,16 +480,162 @@ Render* render_init() {
         .descriptorCount = 1,
         .stageFlags = VK_SHADER_STAGE_VERTEX_BIT,
     };
-    VkDescriptorSetLayoutCreateInfo ubo_set_info = {
+    VkDescriptorSetLayoutCreateInfo desc_set_info = {
         .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO,
         .bindingCount = 1,
         .pBindings = &ubo_binding,
     };
-    if (vkCreateDescriptorSetLayout(g_device, &ubo_set_info, NULL,
-            &self->ubo_set_layout) != VK_SUCCESS) {
-        fatal("Failed to create view-projection descriptor set layout.");
+    if (vkCreateDescriptorSetLayout(g_device, &desc_set_info, NULL,
+            &self->desc_set_layout) != VK_SUCCESS) {
+        fatal("Failed to create descriptor set layout.");
     }
 
+    // CREATE DESCRIPTOR POOLS
+    // TODO rewrite to be more specific
+
+    // UBO descriptor pool
+    enum { descriptor_type_count = 1 };
+    VkDescriptorType descriptor_types[descriptor_type_count] = {
+        VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
+    };
+    VkDescriptorPoolSize* pool_sizes = malloc_nofail(
+            sizeof(VkDescriptorPoolSize) * descriptor_type_count);
+    for (size_t i=0; i < descriptor_type_count; i++) {
+        pool_sizes[i].type = descriptor_types[i];
+        pool_sizes[i].descriptorCount = FRAMES_IN_FLIGHT;
+    }
+    VkDescriptorPoolCreateInfo desc_pool_info = {
+        .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO,
+        .poolSizeCount = descriptor_type_count,
+        .pPoolSizes = pool_sizes,
+        .maxSets = FRAMES_IN_FLIGHT,
+    };
+    if (vkCreateDescriptorPool(
+            g_device, &desc_pool_info, NULL, &self->descriptor_pool)
+            != VK_SUCCESS) {
+        fatal("Failed to create descriptor pool.");
+    }
+    mem_free(pool_sizes);
+
+    // G-buffer descriptor pool
+    VkDescriptorPoolSize gbuf_desc_pool_size = {
+        .type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+        .descriptorCount = 3,
+    };
+    VkDescriptorPoolCreateInfo gbuf_desc_pool_info = {
+        .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO,
+        .poolSizeCount = 1,
+        .pPoolSizes = &gbuf_desc_pool_size,
+        .maxSets = 1,
+    };
+    if (vkCreateDescriptorPool(
+            g_device, &gbuf_desc_pool_info, NULL, &self->gbuf_descriptor_pool)
+            != VK_SUCCESS) {
+        fatal("Failed to create descriptor pool.");
+    }
+
+    // Texture descriptor pool
+    VkDescriptorPoolSize texture_pool_size = {
+        .type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+        .descriptorCount = MAX_TEXTURES,
+    };
+    VkDescriptorPoolCreateInfo texture_pool_info = {
+        .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO,
+        .poolSizeCount = 1,
+        .pPoolSizes = &texture_pool_size,
+        .maxSets = MAX_TEXTURES,
+    };
+    if (vkCreateDescriptorPool(
+            g_device, &texture_pool_info, NULL, &self->texture_descriptor_pool)
+            != VK_SUCCESS) {
+        fatal("Failed to create texture descriptor pool.");
+    }
+
+    // Allocate UBO descriptor set
+    VkDescriptorSetAllocateInfo desc_set_alloc_info = {
+        .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO,
+        .descriptorPool = self->descriptor_pool,
+        .descriptorSetCount = 1,
+        .pSetLayouts = &self->desc_set_layout,
+    };
+    for (size_t i=0; i < FRAMES_IN_FLIGHT; i++) {
+        if (vkAllocateDescriptorSets(
+                g_device, &desc_set_alloc_info, &self->desc_sets[i]
+                ) != VK_SUCCESS) {
+            fatal("Failed to allocate descriptor sets.");
+        }
+    }
+
+    VkDescriptorSetLayoutBinding position_gbuf_binding = {
+        .binding = 0,
+        .descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+        .descriptorCount = 1,
+        .stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT,
+    };
+    VkDescriptorSetLayoutBinding normal_gbuf_binding = {
+        .binding = 1,
+        .descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+        .descriptorCount = 1,
+        .stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT,
+    };
+    VkDescriptorSetLayoutBinding albedo_gbuf_binding = {
+        .binding = 2,
+        .descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+        .descriptorCount = 1,
+        .stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT,
+    };
+    VkDescriptorSetLayoutBinding gbuf_bindings[3] = {
+        position_gbuf_binding, normal_gbuf_binding, albedo_gbuf_binding,
+    };
+    VkDescriptorSetLayoutCreateInfo gbuf_desc_set_info = {
+        .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO,
+        .bindingCount = 3,
+        .pBindings = gbuf_bindings,
+    };
+    if (vkCreateDescriptorSetLayout(g_device, &gbuf_desc_set_info, NULL,
+            &self->gbuf_desc_set_layout) != VK_SUCCESS) {
+        fatal("Failed to create descriptor set layout.");
+    }
+
+    // Create G-buffer sampler
+    VkSamplerCreateInfo gbuf_sampler_info = {
+        .sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO,
+        .magFilter = VK_FILTER_NEAREST,
+        .minFilter = VK_FILTER_NEAREST,
+        .addressModeU = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE,
+        .addressModeV = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE,
+        .addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE,
+        .anisotropyEnable = VK_TRUE,
+        .maxAnisotropy = 1.0f,
+        .borderColor = VK_BORDER_COLOR_FLOAT_OPAQUE_WHITE,
+        .unnormalizedCoordinates = VK_FALSE,
+        .compareEnable = VK_FALSE,
+        .compareOp = VK_COMPARE_OP_ALWAYS,
+        .mipmapMode = VK_SAMPLER_MIPMAP_MODE_LINEAR,
+        .minLod = 0.0f,
+        .maxLod = 1.0,
+        .mipLodBias = 0.0f,
+    };
+
+    if (vkCreateSampler(g_device, &gbuf_sampler_info, NULL,
+                &self->gbuf_sampler) != VK_SUCCESS) {
+        fatal("Failed to create G-buffer sampler.");
+    }
+
+    // Allocate descriptor set for G-buffer attachments
+    VkDescriptorSetAllocateInfo gbuf_desc_set_alloc_info = {
+        .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO,
+        .descriptorPool = self->gbuf_descriptor_pool,
+        .descriptorSetCount = 1,
+        .pSetLayouts = &self->gbuf_desc_set_layout,
+    };
+    if (vkAllocateDescriptorSets(
+            g_device, &gbuf_desc_set_alloc_info, &self->gbuf_desc_set
+            ) != VK_SUCCESS) {
+        fatal("Failed to allocate descriptor sets.");
+    }
+
+    // Texture sampler descriptor set layout
     VkDescriptorSetLayoutBinding texture_sampler_binding = {
         .binding = 0,
         .descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
@@ -507,13 +658,14 @@ Render* render_init() {
         .size = sizeof(PushConstants),
     };
 
-    VkDescriptorSetLayout set_layouts[2] = {
-        self->ubo_set_layout, self->texture_set_layout,
+    VkDescriptorSetLayout set_layouts[3] = {
+        self->desc_set_layout, self->texture_set_layout,
+        self->gbuf_desc_set_layout
     };
 
     const VkPipelineLayoutCreateInfo pipeline_layout_info = {
         .sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO,
-        .setLayoutCount = 2,
+        .setLayoutCount = 3,
         .pSetLayouts = set_layouts,
         .pushConstantRangeCount = 1,
         .pPushConstantRanges = &push_constant_range,
@@ -538,8 +690,6 @@ Render* render_init() {
     for (size_t i = 0; i < FRAMES_IN_FLIGHT; i++) {
         vkCreateSemaphore(g_device, &semaphore_info, NULL,
                 &self->image_available_semaphores[i]);
-        vkCreateSemaphore(g_device, &semaphore_info, NULL,
-                &self->mrt_finished_semaphores[i]);
         vkCreateSemaphore(g_device, &semaphore_info, NULL,
                 &self->draw_finished_semaphores[i]);
         vkCreateFence(g_device, &fence_info, NULL,
@@ -663,8 +813,8 @@ static void render_swapchain_dependent_init(Render* self)
     }
 
     if (vkCreateSwapchainKHR(
-            g_device, &swapchain_create_info, NULL, &self->swapchain) != VK_SUCCESS) {
-        fatal("Failed to create swapchain.");
+      g_device, &swapchain_create_info, NULL, &self->swapchain) != VK_SUCCESS) {
+            fatal("Failed to create swapchain.");
     }
 
     uint32_t image_count;
@@ -761,14 +911,9 @@ static void render_swapchain_dependent_init(Render* self)
            g_device, &render_pass_info, NULL, &self->render_pass) !=
            VK_SUCCESS) fatal("Failed to create render pass.");
 
-    create_2d_image(self->swapchain_extent.width,
-            self->swapchain_extent.height, VK_SAMPLE_COUNT_1_BIT, depth_format,
-            VK_IMAGE_TILING_OPTIMAL, VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT,
-            VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, &self->depth_att.image,
-            &self->depth_att.memory);
-    create_2d_image_view(self->depth_att.image, depth_format,
-            VK_IMAGE_ASPECT_DEPTH_BIT,
-            &self->depth_att.view);
+    create_attachment(&self->depth_att, self->swapchain_extent.width,
+            self->swapchain_extent.height, depth_format,
+            VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT);
 
     for (int i=0; i < FRAMES_IN_FLIGHT; i++) {
         VkImageView attachments[2] = {
@@ -862,8 +1007,9 @@ static void render_swapchain_dependent_init(Render* self)
     };
 
     if (vkCreateRenderPass(
-           g_device, &offscreen_render_pass_info, NULL, &self->offscreen_render_pass) !=
-           VK_SUCCESS) fatal("Failed to create render pass.");
+           g_device, &offscreen_render_pass_info, NULL,
+           &self->offscreen_render_pass) != VK_SUCCESS)
+        fatal("Failed to create render pass.");
 
     create_attachment(&self->offscreen_depth, self->swapchain_extent.width,self->swapchain_extent.height,
         depth_format, VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT);
@@ -874,6 +1020,32 @@ static void render_swapchain_dependent_init(Render* self)
     create_attachment(&self->offscreen_normal, self->swapchain_extent.width, self->swapchain_extent.height,
         normal_attachment.format, VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT);
 
+    // Write G-buffer descriptors
+    VkDescriptorImageInfo gbuf_desc_info = {
+        .imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+        .imageView = self->offscreen_position.view,
+        .sampler = self->gbuf_sampler,
+    };
+    VkWriteDescriptorSet gbuf_desc_write = {
+        .sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+        .dstSet = self->gbuf_desc_set,
+        .dstBinding = 0,
+        .dstArrayElement = 0,
+        .descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+        .descriptorCount = 1,
+        .pImageInfo = &gbuf_desc_info,
+    };
+    vkUpdateDescriptorSets(g_device, 1, &gbuf_desc_write, 0, NULL);
+
+    gbuf_desc_info.imageView = self->offscreen_normal.view;
+    gbuf_desc_write.dstBinding = 1;
+    vkUpdateDescriptorSets(g_device, 1, &gbuf_desc_write, 0, NULL);
+
+    gbuf_desc_info.imageView = self->offscreen_albedo.view;
+    gbuf_desc_write.dstBinding = 2;
+    vkUpdateDescriptorSets(g_device, 1, &gbuf_desc_write, 0, NULL);
+
+    // Offscreen framebuffer
     VkImageView offscreen_attachments[4] = {
         self->offscreen_position.view,
         self->offscreen_normal.view,
@@ -964,7 +1136,7 @@ static void render_swapchain_dependent_init(Render* self)
         .depthBoundsTestEnable = VK_FALSE,
         .stencilTestEnable = VK_FALSE,
     };
-    
+
     // Final composition pipeline
     rasterizer.cullMode = VK_CULL_MODE_FRONT_BIT;
 
@@ -1061,6 +1233,7 @@ static void render_swapchain_dependent_init(Render* self)
         .pVertexAttributeDescriptions = attribute_descriptions,
     };
 
+    pipeline_info.pVertexInputState = &vertex_input_info;
     pipeline_info.renderPass = self->offscreen_render_pass;
 
     VkPipelineColorBlendAttachmentState blend_states[3] = {
@@ -1079,7 +1252,11 @@ static void render_swapchain_dependent_init(Render* self)
         fatal("Failed to create graphics pipeline.");
     }
 
+    vkDestroyShaderModule(g_device, shader_stages[0].module, NULL);
+    vkDestroyShaderModule(g_device, shader_stages[1].module, NULL);
+
     // CREATE COLOR IMAGE
+    /*
     create_2d_image(self->swapchain_extent.width,
             self->swapchain_extent.height, VK_SAMPLE_COUNT_1_BIT, self->swapchain_format,
             VK_IMAGE_TILING_OPTIMAL, VK_IMAGE_USAGE_TRANSIENT_ATTACHMENT_BIT |
@@ -1088,47 +1265,8 @@ static void render_swapchain_dependent_init(Render* self)
             &self->color_att.memory);
     create_2d_image_view(self->color_att.image, self->swapchain_format, VK_IMAGE_ASPECT_COLOR_BIT,
             &self->color_att.view);
+            */
 
-    // CREATE DESCRIPTOR POOLS
-    // TODO rewrite to be more specific
-    enum { descriptor_type_count = 1 };
-    VkDescriptorType descriptor_types[descriptor_type_count] = {
-        VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
-    };
-    VkDescriptorPoolSize* pool_sizes = malloc_nofail(
-            sizeof(VkDescriptorPoolSize) * descriptor_type_count);
-    for (size_t i=0; i < descriptor_type_count; i++) {
-        pool_sizes[i].type = descriptor_types[i];
-        pool_sizes[i].descriptorCount = FRAMES_IN_FLIGHT;
-    }
-    VkDescriptorPoolCreateInfo pool_info = {
-        .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO,
-        .poolSizeCount = descriptor_type_count,
-        .pPoolSizes = pool_sizes,
-        .maxSets = FRAMES_IN_FLIGHT,
-    };
-    if (vkCreateDescriptorPool(
-            g_device, &pool_info, NULL, &self->descriptor_pool)
-            != VK_SUCCESS) {
-        fatal("Failed to create descriptor pool.");
-    }
-    mem_free(pool_sizes);
-
-    VkDescriptorPoolSize texture_pool_size = {
-        .type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
-        .descriptorCount = MAX_TEXTURES,
-    };
-    VkDescriptorPoolCreateInfo texture_pool_info = {
-        .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO,
-        .poolSizeCount = 1,
-        .pPoolSizes = &texture_pool_size,
-        .maxSets = MAX_TEXTURES,
-    };
-    if (vkCreateDescriptorPool(
-            g_device, &texture_pool_info, NULL, &self->texture_descriptor_pool)
-            != VK_SUCCESS) {
-        fatal("Failed to create texture descriptor pool.");
-    }
 
     // CREATE UNIFORM BUFFERS
     for (uint32_t i=0; i < FRAMES_IN_FLIGHT; i++) {
@@ -1143,21 +1281,6 @@ static void render_swapchain_dependent_init(Render* self)
     }
 
     self->current_frame = 0;
-
-    // CREATE DESCRIPTOR SETS
-    VkDescriptorSetAllocateInfo desc_set_alloc_info = {
-        .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO,
-        .descriptorPool = self->descriptor_pool,
-        .descriptorSetCount = 1,
-        .pSetLayouts = &self->ubo_set_layout,
-    };
-    for (size_t i=0; i < FRAMES_IN_FLIGHT; i++) {
-        if (vkAllocateDescriptorSets(
-                g_device, &desc_set_alloc_info, &self->ubo_sets[i]
-                ) != VK_SUCCESS) {
-            fatal("Failed to allocate descriptor sets.");
-        }
-    }
 
     // ALLOCATE COMMAND BUFFERS
     // TODO change to one-frame command buffer
@@ -1219,25 +1342,27 @@ void render_draw_frame(Render* self, vec3 cam_pos, vec3 cam_dir, vec3 cam_up) {
             VK_SUCCESS) {
         fatal("Failed to begin recording command buffer.");
     }
-    VkClearValue clear_values[2] = {
-        { .color = {0.0f, 0.0f, 0.0f, 1.0f} },
+    VkClearValue clear_values[4] = {
+        { .color = {1.0f, 1.0f, 1.0f, 1.0f} },
+        { .color = {1.0f, 1.0f, 1.0f, 1.0f} },
+        { .color = {1.0f, 1.0f, 1.0f, 1.0f} },
         { .depthStencil = {1.0f, 0} },
     };
     VkRenderPassBeginInfo render_pass_info = {
         .sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO,
-        .renderPass = self->render_pass,
-        .framebuffer = self->framebuffers[current_frame],
+        .renderPass = self->offscreen_render_pass,
+        .framebuffer = self->offscreen_framebuffer,
         .renderArea.offset = {0, 0},
         .renderArea.extent = self->swapchain_extent,
-        .clearValueCount = 2,
+        .clearValueCount = 4,
         .pClearValues = clear_values,
     };
 
     vkCmdBeginRenderPass(self->command_buffers[current_frame], &render_pass_info,
-                         VK_SUBPASS_CONTENTS_INLINE);
+                             VK_SUBPASS_CONTENTS_INLINE);
 
     vkCmdBindPipeline(self->command_buffers[current_frame],
-            VK_PIPELINE_BIND_POINT_GRAPHICS, self->graphics_pipeline);
+            VK_PIPELINE_BIND_POINT_GRAPHICS, self->offscreen_graphics_pipeline);
 
     VkDeviceSize offset = 0;
     vkCmdBindVertexBuffers(self->command_buffers[current_frame], 0, 1,
@@ -1247,7 +1372,7 @@ void render_draw_frame(Render* self, vec3 cam_pos, vec3 cam_dir, vec3 cam_up) {
             VK_INDEX_TYPE_UINT16);
     vkCmdBindDescriptorSets(self->command_buffers[current_frame],
             VK_PIPELINE_BIND_POINT_GRAPHICS, self->graphics_pipeline_layout,
-            0, 1, &self->ubo_sets[current_frame], 0, NULL);
+            0, 1, &self->desc_sets[current_frame], 0, NULL);
 
     // Draw the nodes
     for (size_t n=0; n < g_nodes_count; n++) {
@@ -1284,6 +1409,27 @@ void render_draw_frame(Render* self, vec3 cam_pos, vec3 cam_dir, vec3 cam_up) {
         }
     }
 
+    vkCmdEndRenderPass(self->command_buffers[current_frame]);
+
+    render_pass_info.renderPass = self->render_pass;
+    render_pass_info.framebuffer = self->framebuffers[current_frame];
+    VkClearValue deferred_clear_values[2] = {
+        { .color = {0.0f, 0.0f, 0.0f, 0.0f} },
+        { .depthStencil = {1.0f, 0} },
+    };
+    render_pass_info.clearValueCount = 2;
+    render_pass_info.pClearValues = deferred_clear_values;
+
+    vkCmdBeginRenderPass(self->command_buffers[current_frame], &render_pass_info,
+                         VK_SUBPASS_CONTENTS_INLINE);
+    /*
+    vkCmdBindDescriptorSets(self->command_buffers[current_frame],
+            VK_PIPELINE_BIND_POINT_GRAPHICS, self->graphics_pipeline_layout,
+            0, 1, &self->desc_sets[current_frame], 0, NULL);
+    vkCmdBindPipeline(self->command_buffers[current_frame],
+            VK_PIPELINE_BIND_POINT_GRAPHICS, self->graphics_pipeline);
+    vkCmdDraw(self->command_buffers[current_frame], 3, 1, 0, 0);
+    */
     vkCmdEndRenderPass(self->command_buffers[current_frame]);
 
     if (vkEndCommandBuffer(self->command_buffers[current_frame]) != VK_SUCCESS) {
@@ -1480,6 +1626,7 @@ void render_upload_map_mesh(Render* self)
     
     // Load materials
     g_texture_count = gltf_data->materials_count;
+    DBASSERT(g_texture_count <= MAX_TEXTURES);
     g_texture_images = malloc_nofail(sizeof(VkImage) * g_texture_count);
     g_texture_image_views = malloc_nofail(sizeof(VkImageView) * g_texture_count);
     g_texture_image_memories =
@@ -1695,7 +1842,7 @@ void render_upload_map_mesh(Render* self)
 
         VkWriteDescriptorSet uniform_write = {
             .sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
-            .dstSet = self->ubo_sets[i],
+            .dstSet = self->desc_sets[i],
             .dstBinding = 0,
             .dstArrayElement = 0,
             .descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
@@ -1710,12 +1857,11 @@ void render_upload_map_mesh(Render* self)
 static void cleanup_swapchain(Render* self)
 {
     vkDestroyDescriptorPool(g_device, self->descriptor_pool, NULL);
+    vkDestroyDescriptorPool(g_device, self->gbuf_descriptor_pool, NULL);
 
     for (size_t i=0; i < FRAMES_IN_FLIGHT; i++) {
         vkDestroySemaphore(
                 g_device, self->image_available_semaphores[i], NULL);
-        vkDestroySemaphore(
-                g_device, self->mrt_finished_semaphores[i], NULL);
         vkDestroySemaphore(
                 g_device, self->draw_finished_semaphores[i], NULL);
         vkDestroyFence(g_device, self->commands_executed_fences[i], NULL);
@@ -1724,9 +1870,10 @@ static void cleanup_swapchain(Render* self)
     for (size_t i=0; i < FRAMES_IN_FLIGHT; i++) {
         vkDestroyFramebuffer(g_device, self->framebuffers[i], NULL);
     }
+    vkDestroyFramebuffer(g_device, self->offscreen_framebuffer, NULL);
     
     destroy_attachment(&self->depth_att);
-    destroy_attachment(&self->color_att);
+    //destroy_attachment(&self->color_att);
     destroy_attachment(&self->offscreen_position);
     destroy_attachment(&self->offscreen_normal);
     destroy_attachment(&self->offscreen_albedo);
@@ -1764,6 +1911,8 @@ void render_destroy(Render* self)
     cleanup_swapchain(self);
 
     vkDestroySampler(g_device, self->texture_sampler, NULL);
+    vkDestroySampler(g_device, self->gbuf_sampler, NULL);
+
     vkDestroyDescriptorPool(g_device, self->texture_descriptor_pool, NULL);
     for (size_t i=0; i < g_texture_count; i++) {     
         vkDestroyImageView(g_device, g_texture_image_views[i], NULL);
@@ -1775,7 +1924,8 @@ void render_destroy(Render* self)
     mem_free(g_texture_image_memories);
     mem_free(g_texture_descriptor_sets);
 
-    vkDestroyDescriptorSetLayout(g_device, self->ubo_set_layout, NULL);
+    vkDestroyDescriptorSetLayout(g_device, self->desc_set_layout, NULL);
+    vkDestroyDescriptorSetLayout(g_device, self->gbuf_desc_set_layout, NULL);
     vkDestroyDescriptorSetLayout(g_device, self->texture_set_layout, NULL);
 
     if (self->index_buffer != VK_NULL_HANDLE) {
