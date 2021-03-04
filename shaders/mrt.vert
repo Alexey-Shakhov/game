@@ -19,7 +19,7 @@ out gl_PerVertex {
 };
 
 void main() {
-    gl_Position = uni.view_proj * push_consts.model * vec4(position, 1.0);
-    out_tex_coord = tex_coord;
     out_world_pos = push_consts.model * vec4(position, 1.0);
+    gl_Position = uni.view_proj * out_world_pos;
+    out_tex_coord = tex_coord;
 }
