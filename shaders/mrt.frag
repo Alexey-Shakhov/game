@@ -3,9 +3,8 @@
 
 layout(set = 1, binding = 0) uniform sampler2D tex_sampler;
 
-layout(location = 0) in vec3 color;
-layout(location = 1) in vec2 tex_coord;
-layout(location = 2) in vec4 in_world_pos;
+layout(location = 0) in vec2 tex_coord;
+layout(location = 1) in vec4 in_world_pos;
 
 layout(location = 0) out vec4 out_position;
 layout(location = 1) out vec4 out_normal;

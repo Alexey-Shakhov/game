@@ -1207,7 +1207,7 @@ static void render_swapchain_dependent_init(Render* self)
         .inputRate = VK_VERTEX_INPUT_RATE_VERTEX,
     };
 
-    enum { v_attr_desc_count = 3 };
+    enum { v_attr_desc_count = 2 };
     VkVertexInputAttributeDescription attribute_descriptions[v_attr_desc_count];
 
     attribute_descriptions[0].binding = 0;
@@ -1217,13 +1217,8 @@ static void render_swapchain_dependent_init(Render* self)
 
     attribute_descriptions[1].binding = 0;
     attribute_descriptions[1].location = 1;
-    attribute_descriptions[1].format = VK_FORMAT_R32G32B32_SFLOAT;
-    attribute_descriptions[1].offset = offsetof(Vertex, color);
-
-    attribute_descriptions[2].binding = 0;
-    attribute_descriptions[2].location = 2;
-    attribute_descriptions[2].format = VK_FORMAT_R32G32_SFLOAT;
-    attribute_descriptions[2].offset = offsetof(Vertex, tex_coord);
+    attribute_descriptions[1].format = VK_FORMAT_R32G32_SFLOAT;
+    attribute_descriptions[1].offset = offsetof(Vertex, tex_coord);
 
     struct VkPipelineVertexInputStateCreateInfo vertex_input_info = {
         .sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO,
