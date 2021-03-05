@@ -945,7 +945,7 @@ static void render_swapchain_dependent_init(Render* self)
         .stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE,
         .stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE,
         .initialLayout = VK_IMAGE_LAYOUT_UNDEFINED,
-        .finalLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+        .finalLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
     };
     struct VkAttachmentDescription normal_attachment = {
         .format = VK_FORMAT_R16G16B16A16_SFLOAT,
@@ -955,7 +955,7 @@ static void render_swapchain_dependent_init(Render* self)
         .stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE,
         .stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE,
         .initialLayout = VK_IMAGE_LAYOUT_UNDEFINED,
-        .finalLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+        .finalLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
     };
     struct VkAttachmentDescription albedo_attachment = {
         .format = VK_FORMAT_R8G8B8A8_UNORM,
@@ -965,7 +965,7 @@ static void render_swapchain_dependent_init(Render* self)
         .stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE,
         .stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE,
         .initialLayout = VK_IMAGE_LAYOUT_UNDEFINED,
-        .finalLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+        .finalLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
     };
     struct VkAttachmentDescription offscreen_depth_attachment = {
         .format = depth_format,
@@ -1338,9 +1338,9 @@ void render_draw_frame(Render* self, vec3 cam_pos, vec3 cam_dir, vec3 cam_up) {
         fatal("Failed to begin recording command buffer.");
     }
     VkClearValue clear_values[4] = {
-        { .color = {1.0f, 1.0f, 1.0f, 1.0f} },
-        { .color = {1.0f, 1.0f, 1.0f, 1.0f} },
-        { .color = {1.0f, 1.0f, 1.0f, 1.0f} },
+        { .color = {0.0f, 0.0f, 0.0f, 1.0f} },
+        { .color = {0.0f, 0.0f, 0.0f, 1.0f} },
+        { .color = {0.0f, 0.0f, 0.0f, 1.0f} },
         { .depthStencil = {1.0f, 0} },
     };
     VkRenderPassBeginInfo render_pass_info = {
@@ -1417,14 +1417,12 @@ void render_draw_frame(Render* self, vec3 cam_pos, vec3 cam_dir, vec3 cam_up) {
 
     vkCmdBeginRenderPass(self->command_buffers[current_frame], &render_pass_info,
                          VK_SUBPASS_CONTENTS_INLINE);
-    /*
     vkCmdBindDescriptorSets(self->command_buffers[current_frame],
             VK_PIPELINE_BIND_POINT_GRAPHICS, self->graphics_pipeline_layout,
-            0, 1, &self->desc_sets[current_frame], 0, NULL);
+            2, 1, &self->gbuf_desc_set, 0, NULL);
     vkCmdBindPipeline(self->command_buffers[current_frame],
             VK_PIPELINE_BIND_POINT_GRAPHICS, self->graphics_pipeline);
     vkCmdDraw(self->command_buffers[current_frame], 3, 1, 0, 0);
-    */
     vkCmdEndRenderPass(self->command_buffers[current_frame]);
 
     if (vkEndCommandBuffer(self->command_buffers[current_frame]) != VK_SUCCESS) {
