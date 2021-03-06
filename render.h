@@ -15,6 +15,7 @@ void render_destroy(Render* self);
 typedef struct Vertex {
     vec3 position;
     vec2 tex_coord;
+    vec3 normal;
 } Vertex;
 void render_upload_map_mesh(Render* self);
 

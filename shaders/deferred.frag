@@ -14,5 +14,6 @@ void main()
     vec3 normal = texture(normal, inUV).rgb;
     vec4 albedo = texture(albedo, inUV);
 
-    out_color = albedo;
+    #define ambient 0.5
+    out_color = albedo * ambient;
 }
