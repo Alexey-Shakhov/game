@@ -171,8 +171,6 @@ typedef struct Render {
     VkPipeline offscreen_graphics_pipeline;
     VkCommandPool graphics_command_pool;
 
-    Attachment depth_att;
-
     Attachment offscreen_position;
     Attachment offscreen_normal;
     Attachment offscreen_albedo;
@@ -847,35 +845,21 @@ static void render_swapchain_dependent_init(Render* self)
     };
 
     VkFormat depth_format = find_depth_format();
-    struct VkAttachmentDescription depth_attachment = {
-        .format = depth_format,
-        .samples = VK_SAMPLE_COUNT_1_BIT,
-        .loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR,
-        .storeOp = VK_ATTACHMENT_STORE_OP_DONT_CARE,
-        .stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE,
-        .stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE,
-        .initialLayout = VK_IMAGE_LAYOUT_UNDEFINED,
-        .finalLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL,
-    };
 
-    enum {attachment_count = 2};
+    enum {attachment_count = 1};
     struct VkAttachmentDescription attachments[attachment_count] = {
-        color_attachment, depth_attachment,
+        color_attachment,
     };
     struct VkAttachmentReference color_attachment_ref = {
         .attachment = 0,
         .layout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
-    };
-    struct VkAttachmentReference depth_attachment_ref = {
-        .attachment = 1,
-        .layout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL,
     };
 
     VkSubpassDescription subpass = {
         .pipelineBindPoint = VK_PIPELINE_BIND_POINT_GRAPHICS,
         .colorAttachmentCount = 1,
         .pColorAttachments = &color_attachment_ref,
-        .pDepthStencilAttachment = &depth_attachment_ref,
+        .pDepthStencilAttachment = NULL,
     };
 
     struct VkSubpassDependency dependency_start = {
@@ -916,14 +900,9 @@ static void render_swapchain_dependent_init(Render* self)
            g_device, &render_pass_info, NULL, &self->render_pass) !=
            VK_SUCCESS) fatal("Failed to create render pass.");
 
-    create_attachment(&self->depth_att, self->swapchain_extent.width,
-            self->swapchain_extent.height, depth_format,
-            VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT);
-
     for (int i=0; i < FRAMES_IN_FLIGHT; i++) {
-        VkImageView attachments[2] = {
+        VkImageView attachments[1] = {
             self->swapchain_image_views[i],
-            self->depth_att.view,
         };
         VkFramebufferCreateInfo framebuffer_info = {
             .sType = VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO,
@@ -1911,7 +1890,6 @@ static void cleanup_swapchain(Render* self)
     }
     vkDestroyFramebuffer(g_device, self->offscreen_framebuffer, NULL);
     
-    destroy_attachment(&self->depth_att);
     destroy_attachment(&self->offscreen_position);
     destroy_attachment(&self->offscreen_normal);
     destroy_attachment(&self->offscreen_albedo);
