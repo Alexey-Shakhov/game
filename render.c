@@ -210,9 +210,9 @@ typedef struct Render {
 
     VkCommandBuffer command_buffers[FRAMES_IN_FLIGHT];
 
-    VkFence commands_executed_fences[FRAMES_IN_FLIGHT];
-    VkSemaphore image_available_semaphores[FRAMES_IN_FLIGHT];
-    VkSemaphore draw_finished_semaphores[FRAMES_IN_FLIGHT];
+    VkFence commands_executed_fence;
+    VkSemaphore image_available_semaphore;
+    VkSemaphore draw_finished_semaphore;
 
     size_t current_frame;
 } Render;
@@ -703,14 +703,12 @@ Render* render_init() {
         .sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO,
         .flags = VK_FENCE_CREATE_SIGNALED_BIT,
     };
-    for (size_t i = 0; i < FRAMES_IN_FLIGHT; i++) {
-        vkCreateSemaphore(g_device, &semaphore_info, NULL,
-                &self->image_available_semaphores[i]);
-        vkCreateSemaphore(g_device, &semaphore_info, NULL,
-                &self->draw_finished_semaphores[i]);
-        vkCreateFence(g_device, &fence_info, NULL,
-                &self->commands_executed_fences[i]);
-    }
+    vkCreateSemaphore(g_device, &semaphore_info, NULL,
+            &self->image_available_semaphore);
+    vkCreateSemaphore(g_device, &semaphore_info, NULL,
+            &self->draw_finished_semaphore);
+    vkCreateFence(g_device, &fence_info, NULL,
+            &self->commands_executed_fence);
 
     render_swapchain_dependent_init(self);
     return self;
@@ -1353,7 +1351,7 @@ void render_draw_frame(Render* self, vec3 cam_pos, vec3 cam_dir, vec3 cam_up) {
     uint32_t image_index;
     VkResult acquire_image_result =
         vkAcquireNextImageKHR(g_device, self->swapchain, UINT64_MAX,
-                self->image_available_semaphores[current_frame], VK_NULL_HANDLE,
+                self->image_available_semaphore, VK_NULL_HANDLE,
                 &image_index);
 
     if (acquire_image_result == VK_ERROR_OUT_OF_DATE_KHR) {
@@ -1365,7 +1363,7 @@ void render_draw_frame(Render* self, vec3 cam_pos, vec3 cam_dir, vec3 cam_up) {
     }
 
     vkWaitForFences(
-            g_device, 1, &self->commands_executed_fences[current_frame],
+            g_device, 1, &self->commands_executed_fence,
             VK_TRUE, UINT64_MAX);
     VkCommandBufferBeginInfo begin_info = {
         .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
@@ -1474,25 +1472,25 @@ void render_draw_frame(Render* self, vec3 cam_pos, vec3 cam_dir, vec3 cam_up) {
     VkSubmitInfo submit_info = {
         .sType = VK_STRUCTURE_TYPE_SUBMIT_INFO,
         .waitSemaphoreCount = 1,
-        .pWaitSemaphores = &self->image_available_semaphores[current_frame],
+        .pWaitSemaphores = &self->image_available_semaphore,
         .pWaitDstStageMask = &wait_mask,
         .commandBufferCount = 1,
         .pCommandBuffers = &self->command_buffers[image_index],
         .signalSemaphoreCount = 1,
-        .pSignalSemaphores = &self->draw_finished_semaphores[current_frame],
+        .pSignalSemaphores = &self->draw_finished_semaphore,
     };
 
-    vkResetFences(g_device, 1, &self->commands_executed_fences[current_frame]);
+    vkResetFences(g_device, 1, &self->commands_executed_fence);
 
     if (vkQueueSubmit(self->graphics_queue, 1, &submit_info,
-            self->commands_executed_fences[current_frame]) != VK_SUCCESS) {
+            self->commands_executed_fence) != VK_SUCCESS) {
         fatal("Failed to submit draw command buffer.");
     }
 
     VkPresentInfoKHR present_info = {
         .sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR,
         .waitSemaphoreCount = 1,
-        .pWaitSemaphores = &self->draw_finished_semaphores[current_frame],
+        .pWaitSemaphores = &self->draw_finished_semaphore,
         .swapchainCount = 1,
         .pSwapchains = &self->swapchain,
         .pImageIndices = &image_index,
@@ -1924,13 +1922,11 @@ static void cleanup_swapchain(Render* self)
     vkDestroyDescriptorPool(g_device, self->descriptor_pool, NULL);
     vkDestroyDescriptorPool(g_device, self->gbuf_descriptor_pool, NULL);
 
-    for (size_t i=0; i < FRAMES_IN_FLIGHT; i++) {
-        vkDestroySemaphore(
-                g_device, self->image_available_semaphores[i], NULL);
-        vkDestroySemaphore(
-                g_device, self->draw_finished_semaphores[i], NULL);
-        vkDestroyFence(g_device, self->commands_executed_fences[i], NULL);
-    }
+    vkDestroySemaphore(
+            g_device, self->image_available_semaphore, NULL);
+    vkDestroySemaphore(
+            g_device, self->draw_finished_semaphore, NULL);
+    vkDestroyFence(g_device, self->commands_executed_fence, NULL);
 
     for (size_t i=0; i < FRAMES_IN_FLIGHT; i++) {
         vkDestroyFramebuffer(g_device, self->framebuffers[i], NULL);
