@@ -208,7 +208,7 @@ typedef struct Render {
     VkDescriptorSet gbuf_desc_set;
     VkDescriptorSet texture_sets[MAX_TEXTURES];
 
-    VkCommandBuffer command_buffers[FRAMES_IN_FLIGHT];
+    VkCommandBuffer command_buffer;
 
     VkFence commands_executed_fence;
     VkSemaphore image_available_semaphore;
@@ -509,31 +509,23 @@ Render* render_init() {
     // TODO rewrite to be more specific
 
     // UBO descriptor pool
-    enum { descriptor_type_count = 2 };
-    VkDescriptorType descriptor_types[descriptor_type_count] = {
-        // MRT vertex shader UBO
-        VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
-        // Deferred fragment shader UBO
-        VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
+    // MRT vertex shader UBO
+    // Deferred fragment shader UBO
+    VkDescriptorPoolSize pool_size = {
+        .type = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
+        .descriptorCount = 2,
     };
-    VkDescriptorPoolSize* pool_sizes = malloc_nofail(
-            sizeof(VkDescriptorPoolSize) * descriptor_type_count);
-    for (size_t i=0; i < descriptor_type_count; i++) {
-        pool_sizes[i].type = descriptor_types[i];
-        pool_sizes[i].descriptorCount = FRAMES_IN_FLIGHT;
-    }
     VkDescriptorPoolCreateInfo desc_pool_info = {
         .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO,
-        .poolSizeCount = descriptor_type_count,
-        .pPoolSizes = pool_sizes,
-        .maxSets = FRAMES_IN_FLIGHT,
+        .poolSizeCount = 1,
+        .pPoolSizes = &pool_size,
+        .maxSets = 1,
     };
     if (vkCreateDescriptorPool(
             g_device, &desc_pool_info, NULL, &self->descriptor_pool)
             != VK_SUCCESS) {
         fatal("Failed to create descriptor pool.");
     }
-    mem_free(pool_sizes);
 
     // G-buffer descriptor pool
     VkDescriptorPoolSize gbuf_desc_pool_size = {
@@ -1303,16 +1295,15 @@ static void render_swapchain_dependent_init(Render* self)
     self->current_frame = 0;
 
     // ALLOCATE COMMAND BUFFERS
-    // TODO change to one-frame command buffer
     VkCommandBufferAllocateInfo cmdbuf_allocate_info = {
         .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO,
         .commandPool = self->graphics_command_pool,
         .level = VK_COMMAND_BUFFER_LEVEL_PRIMARY,
-        .commandBufferCount = 2,
+        .commandBufferCount = 1,
     };
     if (vkAllocateCommandBuffers(g_device, &cmdbuf_allocate_info,
-            self->command_buffers) != VK_SUCCESS) {
-        fatal("Failed to allocate command buffers.");
+            &self->command_buffer) != VK_SUCCESS) {
+        fatal("Failed to allocate command buffer.");
     }
 }
 
@@ -1369,7 +1360,7 @@ void render_draw_frame(Render* self, vec3 cam_pos, vec3 cam_dir, vec3 cam_up) {
         .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
         .flags = VK_COMMAND_BUFFER_USAGE_SIMULTANEOUS_USE_BIT,
     };
-    if (vkBeginCommandBuffer(self->command_buffers[current_frame], &begin_info) !=
+    if (vkBeginCommandBuffer(self->command_buffer, &begin_info) !=
             VK_SUCCESS) {
         fatal("Failed to begin recording command buffer.");
     }
@@ -1389,19 +1380,19 @@ void render_draw_frame(Render* self, vec3 cam_pos, vec3 cam_dir, vec3 cam_up) {
         .pClearValues = clear_values,
     };
 
-    vkCmdBeginRenderPass(self->command_buffers[current_frame], &render_pass_info,
+    vkCmdBeginRenderPass(self->command_buffer, &render_pass_info,
                              VK_SUBPASS_CONTENTS_INLINE);
 
-    vkCmdBindPipeline(self->command_buffers[current_frame],
+    vkCmdBindPipeline(self->command_buffer,
             VK_PIPELINE_BIND_POINT_GRAPHICS, self->offscreen_graphics_pipeline);
 
     VkDeviceSize offset = 0;
-    vkCmdBindVertexBuffers(self->command_buffers[current_frame], 0, 1,
+    vkCmdBindVertexBuffers(self->command_buffer, 0, 1,
             &self->vertex_buffer, &offset);
     vkCmdBindIndexBuffer(
-            self->command_buffers[current_frame], self->index_buffer, 0,
+            self->command_buffer, self->index_buffer, 0,
             VK_INDEX_TYPE_UINT16);
-    vkCmdBindDescriptorSets(self->command_buffers[current_frame],
+    vkCmdBindDescriptorSets(self->command_buffer,
             VK_PIPELINE_BIND_POINT_GRAPHICS, self->graphics_pipeline_layout,
             0, 1, &self->desc_set, 0, NULL);
 
@@ -1421,7 +1412,7 @@ void render_draw_frame(Render* self, vec3 cam_pos, vec3 cam_dir, vec3 cam_up) {
         }
 
         vkCmdPushConstants(
-                self->command_buffers[current_frame],
+                self->command_buffer,
                 self->graphics_pipeline_layout,
                 VK_SHADER_STAGE_VERTEX_BIT,
                 0,
@@ -1431,16 +1422,16 @@ void render_draw_frame(Render* self, vec3 cam_pos, vec3 cam_dir, vec3 cam_up) {
         for (size_t p=0; p < mesh->primitives_count; p++) {
             Primitive* primitive = &mesh->primitives[p];
             vkCmdBindDescriptorSets(
-                self->command_buffers[current_frame],
+                self->command_buffer,
                 VK_PIPELINE_BIND_POINT_GRAPHICS, self->graphics_pipeline_layout,
                 1, 1, &primitive->texture, 0, NULL);
-            vkCmdDrawIndexed(self->command_buffers[current_frame],
+            vkCmdDrawIndexed(self->command_buffer,
                 primitive->index_count, 1, primitive->index_offset,
                 primitive->vertex_offset, 0);
         }
     }
 
-    vkCmdEndRenderPass(self->command_buffers[current_frame]);
+    vkCmdEndRenderPass(self->command_buffer);
 
     render_pass_info.renderPass = self->render_pass;
     render_pass_info.framebuffer = self->framebuffers[current_frame];
@@ -1451,20 +1442,20 @@ void render_draw_frame(Render* self, vec3 cam_pos, vec3 cam_dir, vec3 cam_up) {
     render_pass_info.clearValueCount = 2;
     render_pass_info.pClearValues = deferred_clear_values;
 
-    vkCmdBeginRenderPass(self->command_buffers[current_frame], &render_pass_info,
+    vkCmdBeginRenderPass(self->command_buffer, &render_pass_info,
                          VK_SUBPASS_CONTENTS_INLINE);
-    vkCmdBindDescriptorSets(self->command_buffers[current_frame],
+    vkCmdBindDescriptorSets(self->command_buffer,
             VK_PIPELINE_BIND_POINT_GRAPHICS, self->graphics_pipeline_layout,
             0, 1, &self->desc_set, 0, NULL);
-    vkCmdBindDescriptorSets(self->command_buffers[current_frame],
+    vkCmdBindDescriptorSets(self->command_buffer,
             VK_PIPELINE_BIND_POINT_GRAPHICS, self->graphics_pipeline_layout,
             2, 1, &self->gbuf_desc_set, 0, NULL);
-    vkCmdBindPipeline(self->command_buffers[current_frame],
+    vkCmdBindPipeline(self->command_buffer,
             VK_PIPELINE_BIND_POINT_GRAPHICS, self->graphics_pipeline);
-    vkCmdDraw(self->command_buffers[current_frame], 3, 1, 0, 0);
-    vkCmdEndRenderPass(self->command_buffers[current_frame]);
+    vkCmdDraw(self->command_buffer, 3, 1, 0, 0);
+    vkCmdEndRenderPass(self->command_buffer);
 
-    if (vkEndCommandBuffer(self->command_buffers[current_frame]) != VK_SUCCESS) {
+    if (vkEndCommandBuffer(self->command_buffer) != VK_SUCCESS) {
         fatal("Failed to record command buffer.");
     }
 
@@ -1475,7 +1466,7 @@ void render_draw_frame(Render* self, vec3 cam_pos, vec3 cam_dir, vec3 cam_up) {
         .pWaitSemaphores = &self->image_available_semaphore,
         .pWaitDstStageMask = &wait_mask,
         .commandBufferCount = 1,
-        .pCommandBuffers = &self->command_buffers[image_index],
+        .pCommandBuffers = &self->command_buffer,
         .signalSemaphoreCount = 1,
         .pSignalSemaphores = &self->draw_finished_semaphore,
     };
