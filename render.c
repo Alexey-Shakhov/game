@@ -192,10 +192,10 @@ typedef struct Render {
     VkBuffer index_buffer;
     VkDeviceMemory index_buffer_memory;
 
-    VkBuffer ubo_buffers[FRAMES_IN_FLIGHT];
-    VkDeviceMemory ubo_buffers_memories[FRAMES_IN_FLIGHT];
-    VkBuffer deferred_ubo_buffers[FRAMES_IN_FLIGHT];
-    VkDeviceMemory deferred_ubo_buffers_memories[FRAMES_IN_FLIGHT];
+    VkBuffer ubo_buffer;
+    VkDeviceMemory ubo_buffer_memory;
+    VkBuffer deferred_ubo_buffer;
+    VkDeviceMemory deferred_ubo_buffer_memory;
 
     VkSampler texture_sampler;
     VkSampler gbuf_sampler;
@@ -204,7 +204,7 @@ typedef struct Render {
     VkDescriptorSetLayout gbuf_desc_set_layout;
     VkDescriptorSetLayout texture_set_layout;
 
-    VkDescriptorSet desc_sets[FRAMES_IN_FLIGHT];
+    VkDescriptorSet desc_set;
     VkDescriptorSet gbuf_desc_set;
     VkDescriptorSet texture_sets[MAX_TEXTURES];
 
@@ -576,12 +576,10 @@ Render* render_init() {
         .descriptorSetCount = 1,
         .pSetLayouts = &self->desc_set_layout,
     };
-    for (size_t i=0; i < FRAMES_IN_FLIGHT; i++) {
-        if (vkAllocateDescriptorSets(
-                g_device, &desc_set_alloc_info, &self->desc_sets[i]
-                ) != VK_SUCCESS) {
-            fatal("Failed to allocate descriptor sets.");
-        }
+    if (vkAllocateDescriptorSets(
+            g_device, &desc_set_alloc_info, &self->desc_set
+            ) != VK_SUCCESS) {
+        fatal("Failed to allocate descriptor sets.");
     }
 
     VkDescriptorSetLayoutBinding position_gbuf_binding = {
@@ -1287,25 +1285,22 @@ static void render_swapchain_dependent_init(Render* self)
 
 
     // CREATE UNIFORM BUFFERS
-    for (uint32_t i=0; i < FRAMES_IN_FLIGHT; i++) {
-        create_buffer(
-                sizeof(MrtUbo),
-                VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT |
-                        VK_BUFFER_USAGE_TRANSFER_DST_BIT,
-                VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
-                &self->ubo_buffers[i],
-                &self->ubo_buffers_memories[i]
-        );
-
-        create_buffer(
-                sizeof(DeferredUbo),
-                VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT |
-                        VK_BUFFER_USAGE_TRANSFER_DST_BIT,
-                VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
-                &self->deferred_ubo_buffers[i],
-                &self->deferred_ubo_buffers_memories[i]
-        );
-    }
+    create_buffer(
+            sizeof(MrtUbo),
+            VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT |
+                    VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+            VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
+            &self->ubo_buffer,
+            &self->ubo_buffer_memory
+    );
+    create_buffer(
+            sizeof(DeferredUbo),
+            VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT |
+                    VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+            VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
+            &self->deferred_ubo_buffer,
+            &self->deferred_ubo_buffer_memory
+    );
 
     self->current_frame = 0;
 
@@ -1324,7 +1319,6 @@ static void render_swapchain_dependent_init(Render* self)
 }
 
 void render_draw_frame(Render* self, vec3 cam_pos, vec3 cam_dir, vec3 cam_up) {
-    printf("x: %f, y: %f, z: %f\n", cam_pos[0], cam_pos[1], cam_pos[2]);
     size_t current_frame = self->current_frame;
 
     // Upload MRT UBO
@@ -1341,7 +1335,7 @@ void render_draw_frame(Render* self, vec3 cam_pos, vec3 cam_dir, vec3 cam_up) {
     upload_to_device_local_buffer(
             (void*) &uniform,
             sizeof(uniform),
-            self->ubo_buffers[current_frame],
+            self->ubo_buffer,
             self->graphics_queue,
             self->graphics_command_pool
     );
@@ -1351,7 +1345,7 @@ void render_draw_frame(Render* self, vec3 cam_pos, vec3 cam_dir, vec3 cam_up) {
     upload_to_device_local_buffer(
             (void*) &defubo,
             sizeof(defubo),
-            self->deferred_ubo_buffers[current_frame],
+            self->deferred_ubo_buffer,
             self->graphics_queue,
             self->graphics_command_pool
     );
@@ -1411,7 +1405,7 @@ void render_draw_frame(Render* self, vec3 cam_pos, vec3 cam_dir, vec3 cam_up) {
             VK_INDEX_TYPE_UINT16);
     vkCmdBindDescriptorSets(self->command_buffers[current_frame],
             VK_PIPELINE_BIND_POINT_GRAPHICS, self->graphics_pipeline_layout,
-            0, 1, &self->desc_sets[current_frame], 0, NULL);
+            0, 1, &self->desc_set, 0, NULL);
 
     // Draw the nodes
     for (size_t n=0; n < g_nodes_count; n++) {
@@ -1463,7 +1457,7 @@ void render_draw_frame(Render* self, vec3 cam_pos, vec3 cam_dir, vec3 cam_up) {
                          VK_SUBPASS_CONTENTS_INLINE);
     vkCmdBindDescriptorSets(self->command_buffers[current_frame],
             VK_PIPELINE_BIND_POINT_GRAPHICS, self->graphics_pipeline_layout,
-            0, 1, &self->desc_sets[current_frame], 0, NULL);
+            0, 1, &self->desc_set, 0, NULL);
     vkCmdBindDescriptorSets(self->command_buffers[current_frame],
             VK_PIPELINE_BIND_POINT_GRAPHICS, self->graphics_pipeline_layout,
             2, 1, &self->gbuf_desc_set, 0, NULL);
@@ -1887,45 +1881,42 @@ void render_upload_map_mesh(Render* self)
 
     cgltf_free(gltf_data);
 
-    for (size_t i = 0; i < FRAMES_IN_FLIGHT; i++) {
-        // MRT UBO
-        VkDescriptorBufferInfo buffer_info = {
-            .buffer = self->ubo_buffers[i],
-            .offset = 0,
-            .range = sizeof(MrtUbo),
-        };
+    // MRT UBO
+    VkDescriptorBufferInfo buffer_info = {
+        .buffer = self->ubo_buffer,
+        .offset = 0,
+        .range = sizeof(MrtUbo),
+    };
 
-        VkWriteDescriptorSet uniform_write = {
-            .sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
-            .dstSet = self->desc_sets[i],
-            .dstBinding = 0,
-            .dstArrayElement = 0,
-            .descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
-            .descriptorCount = 1,
-            .pBufferInfo = &buffer_info,
-        };
+    VkWriteDescriptorSet uniform_write = {
+        .sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+        .dstSet = self->desc_set,
+        .dstBinding = 0,
+        .dstArrayElement = 0,
+        .descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
+        .descriptorCount = 1,
+        .pBufferInfo = &buffer_info,
+    };
 
-        vkUpdateDescriptorSets(g_device, 1, &uniform_write, 0, NULL);
+    vkUpdateDescriptorSets(g_device, 1, &uniform_write, 0, NULL);
+    // Deferred UBO
+    VkDescriptorBufferInfo deferred_buffer_info = {
+        .buffer = self->deferred_ubo_buffer,
+        .offset = 0,
+        .range = sizeof(DeferredUbo),
+    };
 
-        // Deferred UBO
-        VkDescriptorBufferInfo deferred_buffer_info = {
-            .buffer = self->deferred_ubo_buffers[i],
-            .offset = 0,
-            .range = sizeof(DeferredUbo),
-        };
+    VkWriteDescriptorSet deferred_uniform_write = {
+        .sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+        .dstSet = self->desc_set,
+        .dstBinding = 1,
+        .dstArrayElement = 0,
+        .descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
+        .descriptorCount = 1,
+        .pBufferInfo = &deferred_buffer_info,
+    };
 
-        VkWriteDescriptorSet deferred_uniform_write = {
-            .sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
-            .dstSet = self->desc_sets[i],
-            .dstBinding = 1,
-            .dstArrayElement = 0,
-            .descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
-            .descriptorCount = 1,
-            .pBufferInfo = &deferred_buffer_info,
-        };
-
-        vkUpdateDescriptorSets(g_device, 1, &deferred_uniform_write, 0, NULL);
-    }
+    vkUpdateDescriptorSets(g_device, 1, &deferred_uniform_write, 0, NULL);
 }
 
 static void cleanup_swapchain(Render* self)
@@ -1964,12 +1955,10 @@ static void cleanup_swapchain(Render* self)
         vkDestroyImageView(g_device, self->swapchain_image_views[i], NULL);
     }
 
-    for (size_t i=0; i < FRAMES_IN_FLIGHT; i++) {
-        vkDestroyBuffer(g_device, self->ubo_buffers[i], NULL);
-        vkFreeMemory(g_device, self->ubo_buffers_memories[i], NULL);
-        vkDestroyBuffer(g_device, self->deferred_ubo_buffers[i], NULL);
-        vkFreeMemory(g_device, self->deferred_ubo_buffers_memories[i], NULL);
-    }
+    vkDestroyBuffer(g_device, self->ubo_buffer, NULL);
+    vkFreeMemory(g_device, self->ubo_buffer_memory, NULL);
+    vkDestroyBuffer(g_device, self->deferred_ubo_buffer, NULL);
+    vkFreeMemory(g_device, self->deferred_ubo_buffer_memory, NULL);
 
     vkDestroySwapchainKHR(g_device, self->swapchain, NULL);
 }
