@@ -171,7 +171,6 @@ typedef struct Render {
     VkPipeline offscreen_graphics_pipeline;
     VkCommandPool graphics_command_pool;
 
-    Attachment color_att;
     Attachment depth_att;
 
     Attachment offscreen_position;
@@ -1261,18 +1260,6 @@ static void render_swapchain_dependent_init(Render* self)
     vkDestroyShaderModule(g_device, shader_stages[0].module, NULL);
     vkDestroyShaderModule(g_device, shader_stages[1].module, NULL);
 
-    // CREATE COLOR IMAGE
-    /*
-    create_2d_image(self->swapchain_extent.width,
-            self->swapchain_extent.height, VK_SAMPLE_COUNT_1_BIT, self->swapchain_format,
-            VK_IMAGE_TILING_OPTIMAL, VK_IMAGE_USAGE_TRANSIENT_ATTACHMENT_BIT |
-            VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT,
-            VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, &self->color_att.image,
-            &self->color_att.memory);
-    create_2d_image_view(self->color_att.image, self->swapchain_format, VK_IMAGE_ASPECT_COLOR_BIT,
-            &self->color_att.view);
-            */
-
 
     // CREATE UNIFORM BUFFERS
     create_buffer(
@@ -1925,7 +1912,6 @@ static void cleanup_swapchain(Render* self)
     vkDestroyFramebuffer(g_device, self->offscreen_framebuffer, NULL);
     
     destroy_attachment(&self->depth_att);
-    //destroy_attachment(&self->color_att);
     destroy_attachment(&self->offscreen_position);
     destroy_attachment(&self->offscreen_normal);
     destroy_attachment(&self->offscreen_albedo);
