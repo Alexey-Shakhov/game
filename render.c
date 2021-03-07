@@ -1758,7 +1758,6 @@ void render_upload_map_mesh(Render* self)
     g_nodes_count = gltf_data->nodes_count;
     g_nodes = malloc_nofail(sizeof(Node) * g_nodes_count);
 
-    bool camera_found = false;
     for (size_t n=0; n < g_nodes_count; n++) {
         Node* node = &g_nodes[n];
         cgltf_node* gltf_node = &gltf_nodes[n];
@@ -1798,22 +1797,7 @@ void render_upload_map_mesh(Render* self)
                         (char*) gltf_data->nodes) / sizeof(cgltf_node));
             node->children[c] = &g_nodes[child_index];    
         }
-
-        // Load camera
-        // TODO REALLY load camera
-        /*
-        cgltf_camera* gltf_camera = gltf_node->camera;
-        if (gltf_camera) {
-            camera_found = true;
-            DBASSERT(!gltf_node->parent);
-            DBASSERT(gltf_camera->type == cgltf_camera_type_perspective);
-
-
-            glm_mat4_print(camview,stdout);
-        }
-        */
     }
-    //DBASSERT(camera_found);
 
     self->vertex_buffer = device_local_buffer_from_data(
             (void*) vertices,
