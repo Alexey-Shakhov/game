@@ -68,6 +68,7 @@ typedef struct MrtUbo {
 
 typedef struct DeferredUbo {
     vec3 view_pos;
+    uint32_t light_count;
 } DeferredUbo;
 
 typedef struct PushConstants {
@@ -2152,8 +2153,7 @@ static int create_buffer(
     VkMemoryAllocateInfo allocate_info = {
         .sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
         .allocationSize = memory_requirements.size,
-        .memoryTypeIndex =
-            find_memory_type(memory_requirements, properties),
+        .memoryTypeIndex = find_memory_type(memory_requirements, properties),
     };
 
     if (vkAllocateMemory(g_device, &allocate_info, NULL, bufferMemory)

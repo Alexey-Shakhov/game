@@ -6,6 +6,7 @@ layout(set=2, binding=2) uniform sampler2D albedo;
 
 layout(binding=1) uniform DeferredUbo {
     vec3 view_pos;
+    uint light_count;
 } ubo;
 
 layout (location = 0) in vec2 inUV;
