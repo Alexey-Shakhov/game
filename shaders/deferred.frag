@@ -9,14 +9,19 @@ layout(binding=1) uniform DeferredUbo {
     uint light_count;
 } ubo;
 
-layout (location = 0) in vec2 inUV;
-
-layout (location = 0) out vec4 out_color;
-
 struct Light {
     vec3 position;
     vec3 color;
 };
+
+layout(binding=2) buffer LightsSB
+{
+    Light lights[];  
+};
+
+layout (location = 0) in vec2 inUV;
+
+layout (location = 0) out vec4 out_color;
 
 void main()
 {
@@ -27,18 +32,18 @@ void main()
     #define ambient 0.3
     vec3 color = albedo.rgb * ambient;
 
-    Light light;
-    light.position = vec3(0.0, 0.0, 6.0);
-    light.color = vec3(1.0, 1.0, 0.0);
+    for (int i=0; i < ubo.light_count; i++) {
+        Light light = lights[i];
 
-    vec3 frag_light_vec = light.position - pos;
-    frag_light_vec = normalize(frag_light_vec);
-    vec3 frag_view_dir = normalize(ubo.view_pos - pos);
+        vec3 frag_light_vec = light.position - pos;
+        frag_light_vec = normalize(frag_light_vec);
+        vec3 frag_view_dir = normalize(ubo.view_pos - pos);
 
-    float dot_nl = max(0.0, dot(normal, frag_light_vec));
-    vec3 diff = light.color * albedo.rgb * dot_nl;
+        float dot_nl = max(0.0, dot(normal, frag_light_vec));
+        vec3 diff = light.color * albedo.rgb * dot_nl;
 
-    color += diff;
+        color += diff;
+    }
 
     out_color = vec4(color, 1.0);
 }

@@ -66,6 +66,14 @@ typedef struct MrtUbo {
     mat4 view_proj;
 } MrtUbo;
 
+typedef struct Light {
+    vec3 pos;
+    uint8_t pad;
+    vec3 color;
+    uint8_t pad2;
+} Light;
+#define LIGHT_COUNT 2
+
 typedef struct DeferredUbo {
     vec3 view_pos;
     uint32_t light_count;
@@ -194,6 +202,8 @@ typedef struct Render {
     VkDeviceMemory ubo_buffer_memory;
     VkBuffer deferred_ubo_buffer;
     VkDeviceMemory deferred_ubo_buffer_memory;
+    VkBuffer lights_buffer;
+    VkDeviceMemory lights_buffer_memory;
 
     VkSampler texture_sampler;
     VkSampler gbuf_sampler;
@@ -490,13 +500,19 @@ Render* render_init() {
         .descriptorCount = 1,
         .stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT,
     };
-    VkDescriptorSetLayoutBinding dbuf_desc_set_bindings[2] = {
-        mrt_ubo_binding, deferred_ubo_binding,
+    VkDescriptorSetLayoutBinding deferred_lights_sbo_binding = {
+        .binding = 2,
+        .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+        .descriptorCount = 1,
+        .stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT,
+    };
+    VkDescriptorSetLayoutBinding desc_set_bindings[3] = {
+        mrt_ubo_binding, deferred_ubo_binding, deferred_lights_sbo_binding,
     };
     VkDescriptorSetLayoutCreateInfo desc_set_info = {
         .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO,
-        .bindingCount = 2,
-        .pBindings = dbuf_desc_set_bindings,
+        .bindingCount = 3,
+        .pBindings = desc_set_bindings,
     };
     if (vkCreateDescriptorSetLayout(g_device, &desc_set_info, NULL,
             &self->desc_set_layout) != VK_SUCCESS) {
@@ -504,19 +520,25 @@ Render* render_init() {
     }
 
     // CREATE DESCRIPTOR POOLS
-    // TODO rewrite to be more specific
 
     // UBO descriptor pool
     // MRT vertex shader UBO
     // Deferred fragment shader UBO
-    VkDescriptorPoolSize pool_size = {
+    VkDescriptorPoolSize ub_pool_size = {
         .type = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
         .descriptorCount = 2,
     };
+    VkDescriptorPoolSize sb_pool_size = {
+        .type = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+        .descriptorCount = 1,
+    };
+    VkDescriptorPoolSize pool_sizes[2] = {
+        ub_pool_size, sb_pool_size,
+    };
     VkDescriptorPoolCreateInfo desc_pool_info = {
         .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO,
-        .poolSizeCount = 1,
-        .pPoolSizes = &pool_size,
+        .poolSizeCount = 2,
+        .pPoolSizes = pool_sizes,
         .maxSets = 1,
     };
     if (vkCreateDescriptorPool(
@@ -1241,7 +1263,8 @@ static void render_swapchain_dependent_init(Render* self)
     vkDestroyShaderModule(g_device, shader_stages[1].module, NULL);
 
 
-    // CREATE UNIFORM BUFFERS
+    // CREATE BUFFERS
+    // TODO Change MRT UBO to host coherent
     create_buffer(
             sizeof(MrtUbo),
             VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT |
@@ -1258,8 +1281,35 @@ static void render_swapchain_dependent_init(Render* self)
             &self->deferred_ubo_buffer,
             &self->deferred_ubo_buffer_memory
     );
+    create_buffer(
+            sizeof(Light) * LIGHT_COUNT,
+            VK_BUFFER_USAGE_STORAGE_BUFFER_BIT |
+                    VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+            VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
+            &self->lights_buffer,
+            &self->lights_buffer_memory
+    );
 
     self->current_frame = 0;
+
+    // Upload lights
+    Light light1 = {
+        .pos = { 3.0, 6.0, 12.0 },
+        .color = { 0.0, 0.0, 1.0 },
+    };
+    Light light2 = {
+        .pos = { -8.0, -2.0, 8.0 },
+        .color = { 1.0, 1.0, 0.0 },
+    };
+    Light lights[2] = {light1, light2};
+
+    upload_to_device_local_buffer(
+            (void*) lights,
+            sizeof(Light) * LIGHT_COUNT,
+            self->lights_buffer,
+            self->graphics_queue,
+            self->graphics_command_pool
+    );
 
     // ALLOCATE COMMAND BUFFERS
     VkCommandBufferAllocateInfo cmdbuf_allocate_info = {
@@ -1287,7 +1337,6 @@ void render_draw_frame(Render* self, vec3 cam_pos, vec3 cam_dir, vec3 cam_up) {
     mat4 view;
     glm_look(cam_pos, cam_dir, cam_up, view);
     glm_mat4_mul(proj, view, uniform.view_proj);
-
     upload_to_device_local_buffer(
             (void*) &uniform,
             sizeof(uniform),
@@ -1295,9 +1344,11 @@ void render_draw_frame(Render* self, vec3 cam_pos, vec3 cam_dir, vec3 cam_up) {
             self->graphics_queue,
             self->graphics_command_pool
     );
+
     // Upload deferred fragment shader UBO
     DeferredUbo defubo;
     memcpy(&defubo.view_pos, cam_pos, sizeof(vec3));
+    defubo.light_count = LIGHT_COUNT;
     upload_to_device_local_buffer(
             (void*) &defubo,
             sizeof(defubo),
@@ -1837,8 +1888,8 @@ void render_upload_map_mesh(Render* self)
         .descriptorCount = 1,
         .pBufferInfo = &buffer_info,
     };
-
     vkUpdateDescriptorSets(g_device, 1, &uniform_write, 0, NULL);
+
     // Deferred UBO
     VkDescriptorBufferInfo deferred_buffer_info = {
         .buffer = self->deferred_ubo_buffer,
@@ -1857,6 +1908,24 @@ void render_upload_map_mesh(Render* self)
     };
 
     vkUpdateDescriptorSets(g_device, 1, &deferred_uniform_write, 0, NULL);
+
+    // Deferred lights SBO
+    VkDescriptorBufferInfo lights_sbo_info = {
+        .buffer = self->lights_buffer,
+        .offset = 0,
+        .range = sizeof(Light) * LIGHT_COUNT,
+    };
+
+    VkWriteDescriptorSet lights_sbo_write = {
+        .sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+        .dstSet = self->desc_set,
+        .dstBinding = 2,
+        .dstArrayElement = 0,
+        .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+        .descriptorCount = 1,
+        .pBufferInfo = &lights_sbo_info,
+    };
+    vkUpdateDescriptorSets(g_device, 1, &lights_sbo_write, 0, NULL);
 }
 
 static void cleanup_swapchain(Render* self)
@@ -1891,10 +1960,13 @@ static void cleanup_swapchain(Render* self)
         vkDestroyImageView(g_device, self->swapchain_image_views[i], NULL);
     }
 
+    // TODO wrap buffer and buffer memory creation / destruction
     vkDestroyBuffer(g_device, self->ubo_buffer, NULL);
     vkFreeMemory(g_device, self->ubo_buffer_memory, NULL);
     vkDestroyBuffer(g_device, self->deferred_ubo_buffer, NULL);
     vkFreeMemory(g_device, self->deferred_ubo_buffer_memory, NULL);
+    vkDestroyBuffer(g_device, self->lights_buffer, NULL);
+    vkFreeMemory(g_device, self->lights_buffer_memory, NULL);
 
     vkDestroySwapchainKHR(g_device, self->swapchain, NULL);
 }
