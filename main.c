@@ -9,7 +9,7 @@
 #define MOVEMENT_SPEED 10
 #define ROTATION_SPEED 0.001
 
-#define MLOOK_LIMIT (CGLM_PI/8)
+#define MLOOK_LIMIT (CGLM_PI/16)
 
 int main()
 {

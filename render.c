@@ -234,7 +234,6 @@ typedef struct Render {
 
     VkDescriptorSet desc_set;
     VkDescriptorSet gbuf_desc_set;
-    VkDescriptorSet texture_sets[MAX_TEXTURES];
 
     VkCommandBuffer command_buffer;
 
