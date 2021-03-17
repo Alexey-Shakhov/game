@@ -40,8 +40,10 @@ typedef struct Mesh {
     Primitive* primitives;
     uint32_t primitives_count;
 } Mesh;
-static Mesh* g_meshes;
-static size_t g_meshes_count;
+void destroy_mesh(Mesh* mesh)
+{
+    mem_free(mesh->primitives);
+}
 
 typedef struct Node Node;
 typedef struct Node {
@@ -51,28 +53,44 @@ typedef struct Node {
     mat4 transform;
     Mesh* mesh;
 } Node;
-static Node* g_nodes;
-static size_t g_nodes_count;
 
 #define MAX_TEXTURES 50
-static size_t g_texture_count;
-static VkImage* g_texture_images;
-static VkDeviceMemory* g_texture_image_memories;
-static VkImageView* g_texture_image_views;
-static VkDescriptorSet* g_texture_descriptor_sets;
+typedef struct Texture {
+    VkImage image;
+    VkDeviceMemory memory;
+    VkImageView view;
+    VkDescriptorSet desc_set;
+} Texture;
+
+void destroy_texture(Texture* texture)
+{
+    vkDestroyImageView(g_device, texture->view, NULL);
+    vkDestroyImage(g_device, texture->image, NULL);
+    vkFreeMemory(g_device, texture->memory, NULL);
+}
+
+typedef struct Light {
+    vec3 pos;
+    uint32_t pad;
+    vec3 color;
+    uint32_t pad2;
+} Light;
+#define LIGHT_COUNT 2
+
+typedef struct Scene {
+    Mesh* meshes;
+    size_t mesh_count;
+    Node* nodes;
+    size_t node_count;
+    Texture* textures;
+    size_t texture_count;
+} Scene;
+static Scene scene;
 
 
 typedef struct MrtUbo {
     mat4 view_proj;
 } MrtUbo;
-
-typedef struct Light {
-    vec3 pos;
-    uint8_t pad;
-    vec3 color;
-    uint8_t pad2;
-} Light;
-#define LIGHT_COUNT 2
 
 typedef struct DeferredUbo {
     vec3 view_pos;
@@ -82,6 +100,11 @@ typedef struct DeferredUbo {
 typedef struct PushConstants {
     mat4 model;
 } PushConstants;
+
+typedef struct Buffer {
+    VkBuffer buffer;
+    VkDeviceMemory memory;
+} Buffer;
 
 static void create_2d_image(uint32_t width, uint32_t height,
         VkSampleCountFlagBits samples, VkFormat format, VkImageTiling tiling,
@@ -100,25 +123,23 @@ static int find_memory_type(
 );
 static int create_buffer(
         size_t size, VkBufferUsageFlags usage,
-        VkMemoryPropertyFlags properties, VkBuffer *buffer,
-        VkDeviceMemory *bufferMemory);
-static VkBuffer device_local_buffer_from_data(
+        VkMemoryPropertyFlags properties, Buffer* buffer);
+static void device_local_buffer_from_data(
         void* data,
         size_t size,
         VkBufferUsageFlags usage,
         VkQueue queue,
         VkCommandPool command_pool,
-        VkDeviceMemory *o_memory
+        Buffer* buffer
 );
 static void upload_to_device_local_buffer(
         void* data,
         size_t size,
-        VkBuffer destination,
+        Buffer* destination,
         VkQueue queue,
         VkCommandPool command_pool
 );
-static VkBuffer upload_data_to_staging_buffer(void* data,
-    size_t size, VkDeviceMemory* staging_buffer_memory);
+static Buffer upload_data_to_staging_buffer(void* data, size_t size);
 
 enum { VALIDATION_ENABLED = 1 };
 
@@ -161,6 +182,12 @@ void destroy_attachment(Attachment* att)
     vkFreeMemory(g_device, att->memory, NULL);
 }
 
+void destroy_buffer(Buffer* buffer)
+{
+    vkDestroyBuffer(g_device, buffer->buffer, NULL);
+    vkFreeMemory(g_device, buffer->memory, NULL);
+}
+
 typedef struct Render {
     VkInstance instance;
     VkSurfaceKHR surface;
@@ -192,18 +219,11 @@ typedef struct Render {
     VkDescriptorPool gbuf_descriptor_pool;
     VkDescriptorPool texture_descriptor_pool;
 
-    VkBuffer vertex_buffer;
-    VkDeviceMemory vertex_buffer_memory;
-
-    VkBuffer index_buffer;
-    VkDeviceMemory index_buffer_memory;
-
-    VkBuffer ubo_buffer;
-    VkDeviceMemory ubo_buffer_memory;
-    VkBuffer deferred_ubo_buffer;
-    VkDeviceMemory deferred_ubo_buffer_memory;
-    VkBuffer lights_buffer;
-    VkDeviceMemory lights_buffer_memory;
+    Buffer vertex_buffer;
+    Buffer index_buffer;
+    Buffer ubo_buffer;
+    Buffer deferred_ubo_buffer;
+    Buffer lights_buffer;
 
     VkSampler texture_sampler;
     VkSampler gbuf_sampler;
@@ -459,8 +479,8 @@ Render* render_init() {
         fatal("Failed to create command pool.");
     }
 
-    self->vertex_buffer = VK_NULL_HANDLE;
-    self->index_buffer = VK_NULL_HANDLE;
+    self->vertex_buffer.buffer = VK_NULL_HANDLE;
+    self->index_buffer.buffer = VK_NULL_HANDLE;
 
     // CREATE TEXTURE SAMPLER
     VkSamplerCreateInfo texture_sampler_info = {
@@ -1270,24 +1290,21 @@ static void render_swapchain_dependent_init(Render* self)
             VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT |
                     VK_BUFFER_USAGE_TRANSFER_DST_BIT,
             VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
-            &self->ubo_buffer,
-            &self->ubo_buffer_memory
+            &self->ubo_buffer
     );
     create_buffer(
             sizeof(DeferredUbo),
             VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT |
                     VK_BUFFER_USAGE_TRANSFER_DST_BIT,
             VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
-            &self->deferred_ubo_buffer,
-            &self->deferred_ubo_buffer_memory
+            &self->deferred_ubo_buffer
     );
     create_buffer(
             sizeof(Light) * LIGHT_COUNT,
             VK_BUFFER_USAGE_STORAGE_BUFFER_BIT |
                     VK_BUFFER_USAGE_TRANSFER_DST_BIT,
             VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
-            &self->lights_buffer,
-            &self->lights_buffer_memory
+            &self->lights_buffer
     );
 
     self->current_frame = 0;
@@ -1306,7 +1323,7 @@ static void render_swapchain_dependent_init(Render* self)
     upload_to_device_local_buffer(
             (void*) lights,
             sizeof(Light) * LIGHT_COUNT,
-            self->lights_buffer,
+            &self->lights_buffer,
             self->graphics_queue,
             self->graphics_command_pool
     );
@@ -1340,7 +1357,7 @@ void render_draw_frame(Render* self, vec3 cam_pos, vec3 cam_dir, vec3 cam_up) {
     upload_to_device_local_buffer(
             (void*) &uniform,
             sizeof(uniform),
-            self->ubo_buffer,
+            &self->ubo_buffer,
             self->graphics_queue,
             self->graphics_command_pool
     );
@@ -1352,7 +1369,7 @@ void render_draw_frame(Render* self, vec3 cam_pos, vec3 cam_dir, vec3 cam_up) {
     upload_to_device_local_buffer(
             (void*) &defubo,
             sizeof(defubo),
-            self->deferred_ubo_buffer,
+            &self->deferred_ubo_buffer,
             self->graphics_queue,
             self->graphics_command_pool
     );
@@ -1406,22 +1423,22 @@ void render_draw_frame(Render* self, vec3 cam_pos, vec3 cam_dir, vec3 cam_up) {
 
     VkDeviceSize offset = 0;
     vkCmdBindVertexBuffers(self->command_buffer, 0, 1,
-            &self->vertex_buffer, &offset);
+            &self->vertex_buffer.buffer, &offset);
     vkCmdBindIndexBuffer(
-            self->command_buffer, self->index_buffer, 0,
+            self->command_buffer, self->index_buffer.buffer, 0,
             VK_INDEX_TYPE_UINT16);
     vkCmdBindDescriptorSets(self->command_buffer,
             VK_PIPELINE_BIND_POINT_GRAPHICS, self->graphics_pipeline_layout,
             0, 1, &self->desc_set, 0, NULL);
 
     // Draw the nodes
-    for (size_t n=0; n < g_nodes_count; n++) {
-        Mesh* mesh = g_nodes[n].mesh;
+    for (size_t n=0; n < scene.node_count; n++) {
+        Mesh* mesh = scene.nodes[n].mesh;
         if (!mesh) continue;
 
         mat4 transform;
-        memcpy(transform, g_nodes[n].transform, sizeof(transform));
-        Node* parent = g_nodes[n].parent;
+        memcpy(transform, scene.nodes[n].transform, sizeof(transform));
+        Node* parent = scene.nodes[n].parent;
         while (parent) {
             mat4 parent_transform;
             memcpy(parent_transform, parent->transform, sizeof(mat4));
@@ -1522,8 +1539,7 @@ bool render_exit(Render* render) {
 }
 
 static void load_texture(Render* self, void* buffer, size_t len,
-        VkImage* image, VkImageView* view, VkDeviceMemory* memory,
-        VkDescriptorSet* descriptor_set)
+        Texture* texture)
 {
     // Load pixels
     int tex_width, tex_height, tex_channels;
@@ -1533,9 +1549,7 @@ static void load_texture(Render* self, void* buffer, size_t len,
     uint32_t image_size = tex_width * tex_height * 4;
 
     // Upload pixels to staging buffer
-    VkDeviceMemory texture_staging_memory;
-    VkBuffer texture_staging = upload_data_to_staging_buffer(pixels, image_size,
-        &texture_staging_memory);
+    Buffer texture_staging = upload_data_to_staging_buffer(pixels, image_size);
 
     stbi_image_free(pixels);
 
@@ -1544,7 +1558,7 @@ static void load_texture(Render* self, void* buffer, size_t len,
             VK_SAMPLE_COUNT_1_BIT, VK_FORMAT_R8G8B8A8_SRGB,
             VK_IMAGE_TILING_OPTIMAL,
             VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
-            VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, image, memory);
+            VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, &texture->image, &texture->memory);
 
     {
     // Transition image layout for upload
@@ -1558,7 +1572,7 @@ static void load_texture(Render* self, void* buffer, size_t len,
         .dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT,
         .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
         .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-        .image = *image,
+        .image = texture->image,
         .subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
         .subresourceRange.baseMipLevel = 0,
         .subresourceRange.levelCount = 1,
@@ -1591,13 +1605,12 @@ static void load_texture(Render* self, void* buffer, size_t len,
             1
         },
     };
-    vkCmdCopyBufferToImage(cmdbuf, texture_staging, *image,
+    vkCmdCopyBufferToImage(cmdbuf, texture_staging.buffer, texture->image,
             VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &region);
     submit_one_time_command_buffer(self->graphics_queue, cmdbuf,
             self->graphics_command_pool);
 
-    vkDestroyBuffer(g_device, texture_staging, NULL);
-    vkFreeMemory(g_device, texture_staging_memory, NULL);
+    destroy_buffer(&texture_staging);
     }
     {
     // Transition image layout for shader access
@@ -1611,7 +1624,7 @@ static void load_texture(Render* self, void* buffer, size_t len,
         .dstAccessMask = VK_ACCESS_SHADER_READ_BIT,
         .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
         .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-        .image = *image,
+        .image = texture->image,
         .subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
         .subresourceRange.baseMipLevel = 0,
         .subresourceRange.levelCount = 1,
@@ -1626,8 +1639,8 @@ static void load_texture(Render* self, void* buffer, size_t len,
             self->graphics_command_pool);
     }
 
-    create_2d_image_view(*image, VK_FORMAT_R8G8B8A8_SRGB,
-            VK_IMAGE_ASPECT_COLOR_BIT, view);
+    create_2d_image_view(texture->image, VK_FORMAT_R8G8B8A8_SRGB,
+            VK_IMAGE_ASPECT_COLOR_BIT, &texture->view);
 
     VkDescriptorSetAllocateInfo tex_set_alloc_info = {
         .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO,
@@ -1636,18 +1649,18 @@ static void load_texture(Render* self, void* buffer, size_t len,
         .pSetLayouts = &self->texture_set_layout,
     };
     if (vkAllocateDescriptorSets(
-            g_device, &tex_set_alloc_info, descriptor_set) != VK_SUCCESS) {
+            g_device, &tex_set_alloc_info, &texture->desc_set) != VK_SUCCESS) {
         fatal("Failed to allocate descriptor sets.");
     }
 
     VkDescriptorImageInfo texture_info = {
         .imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
-        .imageView = *view,
+        .imageView = texture->view,
         .sampler = self->texture_sampler,
     };
     VkWriteDescriptorSet texture_write = {
         .sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
-        .dstSet = *descriptor_set,
+        .dstSet = texture->desc_set,
         .dstBinding = 0,
         .dstArrayElement = 0,
         .descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
@@ -1669,15 +1682,10 @@ void render_upload_map_mesh(Render* self)
     if (gltf_result != cgltf_result_success) fatal("Failed to load GLTF buffers.");
     
     // Load materials
-    g_texture_count = gltf_data->materials_count;
-    DBASSERT(g_texture_count <= MAX_TEXTURES);
-    g_texture_images = malloc_nofail(sizeof(VkImage) * g_texture_count);
-    g_texture_image_views = malloc_nofail(sizeof(VkImageView) * g_texture_count);
-    g_texture_image_memories =
-        malloc_nofail(sizeof(VkDeviceMemory) * g_texture_count);
-    g_texture_descriptor_sets = malloc_nofail(
-            sizeof(VkDescriptorSet) * g_texture_count);
-    for (size_t i=0; i < g_texture_count; i++) {
+    scene.texture_count = gltf_data->materials_count;
+    DBASSERT(scene.texture_count <= MAX_TEXTURES);
+    scene.textures = malloc_nofail(sizeof(Texture) * scene.texture_count);
+    for (size_t i=0; i < scene.texture_count; i++) {
         cgltf_material* gltf_material = &gltf_data->materials[i];
         DBASSERT(gltf_material->has_pbr_metallic_roughness);
         cgltf_texture_view* gltf_texture_view = 
@@ -1690,13 +1698,11 @@ void render_upload_map_mesh(Render* self)
         void* image_data = image_buffer->data + image_buffer_view->offset;
         size_t image_size = image_buffer_view->size;
 
-        load_texture(self, image_data, image_size, &g_texture_images[i],
-                &g_texture_image_views[i], &g_texture_image_memories[i],
-                &g_texture_descriptor_sets[i]);
+        load_texture(self, image_data, image_size, &scene.textures[i]);
     }
 
-    g_meshes = malloc_nofail(sizeof(Mesh) * gltf_data->meshes_count);
-    g_meshes_count = gltf_data->meshes_count;
+    scene.meshes = malloc_nofail(sizeof(Mesh) * gltf_data->meshes_count);
+    scene.mesh_count = gltf_data->meshes_count;
 
     // Precalculate index and vertex buffer sizes
     size_t index_count = 0;
@@ -1727,7 +1733,7 @@ void render_upload_map_mesh(Render* self)
     size_t vertex_offset = 0;
     for (size_t i=0; i < gltf_data->meshes_count; i++) {
         cgltf_mesh* gltf_mesh = &gltf_data->meshes[i];
-        Mesh* mesh = &g_meshes[i];
+        Mesh* mesh = &scene.meshes[i];
         mesh->primitives_count = gltf_mesh->primitives_count;
         mesh->primitives = malloc_nofail(
                         sizeof(Primitive) * mesh->primitives_count);
@@ -1738,7 +1744,7 @@ void render_upload_map_mesh(Render* self)
             // Material
             size_t material_index = (size_t)(((char*)gltf_primitive->material -
                     (char*) gltf_data->materials) / sizeof(cgltf_material));
-            mesh->primitives[p].texture = g_texture_descriptor_sets[material_index];
+            mesh->primitives[p].texture = scene.textures[material_index].desc_set;
 
             // Vertices
             mesh->primitives[p].vertex_offset = vertex_offset;
@@ -1807,11 +1813,11 @@ void render_upload_map_mesh(Render* self)
     
     // Load nodes
     cgltf_node* gltf_nodes = gltf_data->nodes;
-    g_nodes_count = gltf_data->nodes_count;
-    g_nodes = malloc_nofail(sizeof(Node) * g_nodes_count);
+    scene.node_count = gltf_data->nodes_count;
+    scene.nodes = malloc_nofail(sizeof(Node) * scene.node_count);
 
-    for (size_t n=0; n < g_nodes_count; n++) {
-        Node* node = &g_nodes[n];
+    for (size_t n=0; n < scene.node_count; n++) {
+        Node* node = &scene.nodes[n];
         cgltf_node* gltf_node = &gltf_nodes[n];
 
         mat4 transform = GLM_MAT4_IDENTITY_INIT;
@@ -1832,14 +1838,14 @@ void render_upload_map_mesh(Render* self)
         if (gltf_node->mesh) {
             size_t mesh_index = (size_t) (((char*) gltf_node->mesh -
                         (char*) gltf_data->meshes) / sizeof(cgltf_mesh));
-            node->mesh = &g_meshes[mesh_index];
+            node->mesh = &scene.meshes[mesh_index];
         }
 
         node->parent = NULL;
         if (gltf_node->parent) {
             size_t parent_index = (size_t) (((char*) gltf_node->parent -
                         (char*) gltf_nodes) / sizeof(cgltf_node));
-            node->parent = &g_nodes[parent_index];
+            node->parent = &scene.nodes[parent_index];
         }
 
         node->children_count = gltf_node->children_count;
@@ -1847,25 +1853,25 @@ void render_upload_map_mesh(Render* self)
         for (size_t c=0; c < gltf_node->children_count; c++) {
             size_t child_index = (size_t) (((char*) gltf_node->children[c] -
                         (char*) gltf_data->nodes) / sizeof(cgltf_node));
-            node->children[c] = &g_nodes[child_index];    
+            node->children[c] = &scene.nodes[child_index];    
         }
     }
 
-    self->vertex_buffer = device_local_buffer_from_data(
+    device_local_buffer_from_data(
             (void*) vertices,
             sizeof(Vertex) * vertex_count,
             VK_BUFFER_USAGE_VERTEX_BUFFER_BIT,
             self->graphics_queue,
             self->graphics_command_pool,
-            &self->vertex_buffer_memory
+            &self->vertex_buffer
     );
-    self->index_buffer = device_local_buffer_from_data(
+    device_local_buffer_from_data(
             (void*) indices,
             sizeof(uint16_t) * index_count,
             VK_BUFFER_USAGE_INDEX_BUFFER_BIT,
             self->graphics_queue,
             self->graphics_command_pool,
-            &self->index_buffer_memory
+            &self->index_buffer
     );
     mem_free(vertices);
     mem_free(indices);
@@ -1874,7 +1880,7 @@ void render_upload_map_mesh(Render* self)
 
     // MRT UBO
     VkDescriptorBufferInfo buffer_info = {
-        .buffer = self->ubo_buffer,
+        .buffer = self->ubo_buffer.buffer,
         .offset = 0,
         .range = sizeof(MrtUbo),
     };
@@ -1892,7 +1898,7 @@ void render_upload_map_mesh(Render* self)
 
     // Deferred UBO
     VkDescriptorBufferInfo deferred_buffer_info = {
-        .buffer = self->deferred_ubo_buffer,
+        .buffer = self->deferred_ubo_buffer.buffer,
         .offset = 0,
         .range = sizeof(DeferredUbo),
     };
@@ -1911,7 +1917,7 @@ void render_upload_map_mesh(Render* self)
 
     // Deferred lights SBO
     VkDescriptorBufferInfo lights_sbo_info = {
-        .buffer = self->lights_buffer,
+        .buffer = self->lights_buffer.buffer,
         .offset = 0,
         .range = sizeof(Light) * LIGHT_COUNT,
     };
@@ -1960,25 +1966,21 @@ static void cleanup_swapchain(Render* self)
         vkDestroyImageView(g_device, self->swapchain_image_views[i], NULL);
     }
 
-    // TODO wrap buffer and buffer memory creation / destruction
-    vkDestroyBuffer(g_device, self->ubo_buffer, NULL);
-    vkFreeMemory(g_device, self->ubo_buffer_memory, NULL);
-    vkDestroyBuffer(g_device, self->deferred_ubo_buffer, NULL);
-    vkFreeMemory(g_device, self->deferred_ubo_buffer_memory, NULL);
-    vkDestroyBuffer(g_device, self->lights_buffer, NULL);
-    vkFreeMemory(g_device, self->lights_buffer_memory, NULL);
+    destroy_buffer(&self->ubo_buffer);
+    destroy_buffer(&self->deferred_ubo_buffer);
+    destroy_buffer(&self->lights_buffer);
 
     vkDestroySwapchainKHR(g_device, self->swapchain, NULL);
 }
 
 void render_destroy(Render* self)
 {
-    for (size_t i=0; i < g_nodes_count; i++) mem_free(g_nodes[i].children);
-    mem_free(g_nodes);
-    for (size_t i=0; i < g_meshes_count; i++) {
-        mem_free(g_meshes[i].primitives);
+    for (size_t i=0; i < scene.node_count; i++) mem_free(scene.nodes[i].children);
+    mem_free(scene.nodes);
+    for (size_t i=0; i < scene.mesh_count; i++) {
+        destroy_mesh(&scene.meshes[i]);
     }
-    mem_free(g_meshes);
+    mem_free(scene.meshes);
 
     vkDeviceWaitIdle(g_device);
     cleanup_swapchain(self);
@@ -1987,28 +1989,20 @@ void render_destroy(Render* self)
     vkDestroySampler(g_device, self->gbuf_sampler, NULL);
 
     vkDestroyDescriptorPool(g_device, self->texture_descriptor_pool, NULL);
-    for (size_t i=0; i < g_texture_count; i++) {     
-        vkDestroyImageView(g_device, g_texture_image_views[i], NULL);
-        vkDestroyImage(g_device, g_texture_images[i], NULL);
-        vkFreeMemory(g_device, g_texture_image_memories[i], NULL);
+    for (size_t i=0; i < scene.texture_count; i++) {     
+        destroy_texture(&scene.textures[i]);
     } 
-    mem_free(g_texture_image_views);
-    mem_free(g_texture_images);
-    mem_free(g_texture_image_memories);
-    mem_free(g_texture_descriptor_sets);
+    mem_free(scene.textures);
 
     vkDestroyDescriptorSetLayout(g_device, self->desc_set_layout, NULL);
     vkDestroyDescriptorSetLayout(g_device, self->gbuf_desc_set_layout, NULL);
     vkDestroyDescriptorSetLayout(g_device, self->texture_set_layout, NULL);
 
-    if (self->index_buffer != VK_NULL_HANDLE) {
-        vkDestroyBuffer(g_device, self->index_buffer, NULL);
-        vkFreeMemory(g_device, self->index_buffer_memory, NULL);
+    if (self->index_buffer.buffer != VK_NULL_HANDLE) {
+        destroy_buffer(&self->index_buffer);
     }
-
-    if (self->vertex_buffer != VK_NULL_HANDLE) {
-        vkDestroyBuffer(g_device, self->vertex_buffer, NULL);
-        vkFreeMemory(g_device, self->vertex_buffer_memory, NULL);
+    if (self->vertex_buffer.buffer != VK_NULL_HANDLE) {
+        destroy_buffer(&self->vertex_buffer);
     }
 
     vkDestroyCommandPool(g_device, self->graphics_command_pool, NULL);
@@ -2204,8 +2198,7 @@ static int find_memory_type(
 // TODO straighten out shady return values
 static int create_buffer(
         size_t size, VkBufferUsageFlags usage,
-        VkMemoryPropertyFlags properties, VkBuffer *buffer,
-        VkDeviceMemory *bufferMemory)
+        VkMemoryPropertyFlags properties, Buffer* buffer)
 {
     VkDeviceSize device_size = size;
     VkBufferCreateInfo buffer_info = {
@@ -2215,12 +2208,12 @@ static int create_buffer(
         .sharingMode = VK_SHARING_MODE_EXCLUSIVE,
     };
 
-    if (vkCreateBuffer(g_device, &buffer_info, NULL, buffer) != VK_SUCCESS) {
+    if (vkCreateBuffer(g_device, &buffer_info, NULL, &buffer->buffer) != VK_SUCCESS) {
         return 1;
     }
 
     VkMemoryRequirements memory_requirements;
-    vkGetBufferMemoryRequirements(g_device, *buffer, &memory_requirements);
+    vkGetBufferMemoryRequirements(g_device, buffer->buffer, &memory_requirements);
 
     VkMemoryAllocateInfo allocate_info = {
         .sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
@@ -2228,10 +2221,10 @@ static int create_buffer(
         .memoryTypeIndex = find_memory_type(memory_requirements, properties),
     };
 
-    if (vkAllocateMemory(g_device, &allocate_info, NULL, bufferMemory)
+    if (vkAllocateMemory(g_device, &allocate_info, NULL, &buffer->memory)
             != VK_SUCCESS) return 2;
 
-    vkBindBufferMemory(g_device, *buffer, *bufferMemory, 0);
+    vkBindBufferMemory(g_device, buffer->buffer, buffer->memory, 0);
     return 0;
 }
 
@@ -2252,78 +2245,61 @@ static void copy_buffer(
     submit_one_time_command_buffer(queue, command_buffer, command_pool);
 }
 
-static VkBuffer upload_data_to_staging_buffer(void* data,
-    size_t size, VkDeviceMemory* staging_buffer_memory)
+static Buffer upload_data_to_staging_buffer(void* data, size_t size)
 {
     VkDeviceSize device_size = size;
 
-    VkBuffer staging_buffer;
+    Buffer staging_buffer;
     create_buffer(
             size,
             VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
             // TODO use non-coherent memory with a flush
             VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | 
                 VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
-            &staging_buffer,
-            staging_buffer_memory
+            &staging_buffer
     );
 
     void *staging_buffer_mapped;
     vkMapMemory(
-            g_device, *staging_buffer_memory, 0, device_size, 0,
+            g_device, staging_buffer.memory, 0, device_size, 0,
             &staging_buffer_mapped);
     memcpy(staging_buffer_mapped, data, size);
-    vkUnmapMemory(g_device, *staging_buffer_memory);
+    vkUnmapMemory(g_device, staging_buffer.memory);
     return staging_buffer;
 }
 
 static void upload_to_device_local_buffer(
         void* data,
         size_t size,
-        VkBuffer destination,
+        Buffer* destination,
         VkQueue queue,
         VkCommandPool command_pool)
 {
-    VkDeviceSize device_size = size;
-    VkDeviceMemory staging_buffer_memory;
-    VkBuffer staging_buffer = upload_data_to_staging_buffer(
-                data, size, &staging_buffer_memory);
+    Buffer staging_buffer = upload_data_to_staging_buffer(data, size);
     copy_buffer(
-            queue,
-            command_pool,
-            staging_buffer, destination, device_size
-    );
-    vkDestroyBuffer(g_device, staging_buffer, NULL);
-    vkFreeMemory(g_device, staging_buffer_memory, NULL);
+        queue, command_pool, staging_buffer.buffer, destination->buffer, size);
+    destroy_buffer(&staging_buffer);
 }
 
-static VkBuffer device_local_buffer_from_data(
+static void device_local_buffer_from_data(
         void* data,
         size_t size,
         VkBufferUsageFlags usage,
         VkQueue queue,
         VkCommandPool command_pool,
-        VkDeviceMemory *o_memory
-) {
-    VkBuffer device_local_buffer;
-    VkDeviceMemory device_local_buffer_memory;
+        Buffer* buffer)
+{
     create_buffer(
             size,
             VK_BUFFER_USAGE_TRANSFER_DST_BIT | usage,
             VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
-            &device_local_buffer,
-            &device_local_buffer_memory
-    );
+            buffer);
     upload_to_device_local_buffer(
             data,
             size,
-            device_local_buffer,
+            buffer,
             queue,
-            command_pool
-    );
-
-    *o_memory = device_local_buffer_memory;
-    return device_local_buffer;
+            command_pool);
 }
 
 static void recreate_swapchain(Render* self)
