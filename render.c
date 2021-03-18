@@ -77,6 +77,17 @@ typedef struct Light {
 } Light;
 #define LIGHT_COUNT 2
 
+typedef struct Buffer {
+    VkBuffer buffer;
+    VkDeviceMemory memory;
+} Buffer;
+
+void destroy_buffer(Buffer* buffer)
+{
+    vkDestroyBuffer(g_device, buffer->buffer, NULL);
+    vkFreeMemory(g_device, buffer->memory, NULL);
+}
+
 typedef struct Scene {
     Mesh* meshes;
     size_t mesh_count;
@@ -84,7 +95,40 @@ typedef struct Scene {
     size_t node_count;
     Texture* textures;
     size_t texture_count;
+
+    Buffer vertex_buffer;
+    Buffer index_buffer;
+    Buffer lights_buffer;
 } Scene;
+
+void scene_init(Scene* scene)
+{
+    scene->vertex_buffer.buffer = VK_NULL_HANDLE;
+    scene->index_buffer.buffer = VK_NULL_HANDLE;
+}
+
+void destroy_scene(Scene* scene)
+{
+    for (size_t i=0; i < scene->node_count; i++) mem_free(scene->nodes[i].children);
+    mem_free(scene->nodes);
+    for (size_t i=0; i < scene->mesh_count; i++) {
+        destroy_mesh(&scene->meshes[i]);
+    }
+    mem_free(scene->meshes);
+    for (size_t i=0; i < scene->texture_count; i++) {     
+        destroy_texture(&scene->textures[i]);
+    } 
+    mem_free(scene->textures);
+
+    destroy_buffer(&scene->lights_buffer);
+
+    if (scene->index_buffer.buffer != VK_NULL_HANDLE) {
+        destroy_buffer(&scene->index_buffer);
+    }
+    if (scene->vertex_buffer.buffer != VK_NULL_HANDLE) {
+        destroy_buffer(&scene->vertex_buffer);
+    }
+}
 static Scene scene;
 
 
@@ -100,11 +144,6 @@ typedef struct DeferredUbo {
 typedef struct PushConstants {
     mat4 model;
 } PushConstants;
-
-typedef struct Buffer {
-    VkBuffer buffer;
-    VkDeviceMemory memory;
-} Buffer;
 
 static void create_2d_image(uint32_t width, uint32_t height,
         VkSampleCountFlagBits samples, VkFormat format, VkImageTiling tiling,
@@ -182,12 +221,6 @@ void destroy_attachment(Attachment* att)
     vkFreeMemory(g_device, att->memory, NULL);
 }
 
-void destroy_buffer(Buffer* buffer)
-{
-    vkDestroyBuffer(g_device, buffer->buffer, NULL);
-    vkFreeMemory(g_device, buffer->memory, NULL);
-}
-
 typedef struct Render {
     VkInstance instance;
     VkSurfaceKHR surface;
@@ -219,11 +252,8 @@ typedef struct Render {
     VkDescriptorPool gbuf_descriptor_pool;
     VkDescriptorPool texture_descriptor_pool;
 
-    Buffer vertex_buffer;
-    Buffer index_buffer;
     Buffer ubo_buffer;
     Buffer deferred_ubo_buffer;
-    Buffer lights_buffer;
 
     VkSampler texture_sampler;
     VkSampler gbuf_sampler;
@@ -248,6 +278,8 @@ static void render_swapchain_dependent_init(Render* self);
 static void recreate_swapchain(Render* self);
 
 Render* render_init() {
+    scene_init(&scene);
+
     // CREATE WINDOW
     // TODO handle errors
     glfwInit();
@@ -477,9 +509,6 @@ Render* render_init() {
             &self->graphics_command_pool) != VK_SUCCESS) {
         fatal("Failed to create command pool.");
     }
-
-    self->vertex_buffer.buffer = VK_NULL_HANDLE;
-    self->index_buffer.buffer = VK_NULL_HANDLE;
 
     // CREATE TEXTURE SAMPLER
     VkSamplerCreateInfo texture_sampler_info = {
@@ -762,7 +791,7 @@ Render* render_init() {
             VK_BUFFER_USAGE_STORAGE_BUFFER_BIT |
                     VK_BUFFER_USAGE_TRANSFER_DST_BIT,
             VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
-            &self->lights_buffer
+            &scene.lights_buffer
     );
 
     // MRT UBO
@@ -804,7 +833,7 @@ Render* render_init() {
 
     // Deferred lights SBO
     VkDescriptorBufferInfo lights_sbo_info = {
-        .buffer = self->lights_buffer.buffer,
+        .buffer = scene.lights_buffer.buffer,
         .offset = 0,
         .range = sizeof(Light) * LIGHT_COUNT,
     };
@@ -836,7 +865,7 @@ Render* render_init() {
     upload_to_device_local_buffer(
             (void*) lights,
             sizeof(Light) * LIGHT_COUNT,
-            &self->lights_buffer,
+            &scene.lights_buffer,
             self->graphics_queue,
             self->graphics_command_pool
     );
@@ -1476,9 +1505,9 @@ void render_draw_frame(Render* self, vec3 cam_pos, vec3 cam_dir, vec3 cam_up) {
 
     VkDeviceSize offset = 0;
     vkCmdBindVertexBuffers(self->command_buffer, 0, 1,
-            &self->vertex_buffer.buffer, &offset);
+            &scene.vertex_buffer.buffer, &offset);
     vkCmdBindIndexBuffer(
-            self->command_buffer, self->index_buffer.buffer, 0,
+            self->command_buffer, scene.index_buffer.buffer, 0,
             VK_INDEX_TYPE_UINT16);
     vkCmdBindDescriptorSets(self->command_buffer,
             VK_PIPELINE_BIND_POINT_GRAPHICS, self->graphics_pipeline_layout,
@@ -1916,7 +1945,7 @@ void render_upload_map_mesh(Render* self)
             VK_BUFFER_USAGE_VERTEX_BUFFER_BIT,
             self->graphics_queue,
             self->graphics_command_pool,
-            &self->vertex_buffer
+            &scene.vertex_buffer
     );
     device_local_buffer_from_data(
             (void*) indices,
@@ -1924,7 +1953,7 @@ void render_upload_map_mesh(Render* self)
             VK_BUFFER_USAGE_INDEX_BUFFER_BIT,
             self->graphics_queue,
             self->graphics_command_pool,
-            &self->index_buffer
+            &scene.index_buffer
     );
     mem_free(vertices);
     mem_free(indices);
@@ -1964,44 +1993,28 @@ static void cleanup_swapchain(Render* self)
         vkDestroyImageView(g_device, self->swapchain_image_views[i], NULL);
     }
 
-    destroy_buffer(&self->ubo_buffer);
-    destroy_buffer(&self->deferred_ubo_buffer);
-    destroy_buffer(&self->lights_buffer);
 
     vkDestroySwapchainKHR(g_device, self->swapchain, NULL);
 }
 
 void render_destroy(Render* self)
 {
-    for (size_t i=0; i < scene.node_count; i++) mem_free(scene.nodes[i].children);
-    mem_free(scene.nodes);
-    for (size_t i=0; i < scene.mesh_count; i++) {
-        destroy_mesh(&scene.meshes[i]);
-    }
-    mem_free(scene.meshes);
-
     vkDeviceWaitIdle(g_device);
+
     cleanup_swapchain(self);
+    destroy_scene(&scene);
+
+    destroy_buffer(&self->ubo_buffer);
+    destroy_buffer(&self->deferred_ubo_buffer);
 
     vkDestroySampler(g_device, self->texture_sampler, NULL);
     vkDestroySampler(g_device, self->gbuf_sampler, NULL);
 
     vkDestroyDescriptorPool(g_device, self->texture_descriptor_pool, NULL);
-    for (size_t i=0; i < scene.texture_count; i++) {     
-        destroy_texture(&scene.textures[i]);
-    } 
-    mem_free(scene.textures);
 
     vkDestroyDescriptorSetLayout(g_device, self->desc_set_layout, NULL);
     vkDestroyDescriptorSetLayout(g_device, self->gbuf_desc_set_layout, NULL);
     vkDestroyDescriptorSetLayout(g_device, self->texture_set_layout, NULL);
-
-    if (self->index_buffer.buffer != VK_NULL_HANDLE) {
-        destroy_buffer(&self->index_buffer);
-    }
-    if (self->vertex_buffer.buffer != VK_NULL_HANDLE) {
-        destroy_buffer(&self->vertex_buffer);
-    }
 
     vkDestroyCommandPool(g_device, self->graphics_command_pool, NULL);
     vkDestroyDevice(g_device, NULL);
