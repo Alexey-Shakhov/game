@@ -1675,9 +1675,9 @@ void render_upload_map_mesh(Render* self)
     cgltf_options gltf_options = {0};
     cgltf_data* gltf_data = NULL;
     cgltf_result gltf_result = cgltf_parse_file(
-                            &gltf_options, "cube.glb", &gltf_data);
+                            &gltf_options, "res/cube.glb", &gltf_data);
     if (gltf_result != cgltf_result_success) fatal("Failed to load GLTF.");
-    gltf_result = cgltf_load_buffers(&gltf_options, gltf_data, "cube.glb");
+    gltf_result = cgltf_load_buffers(&gltf_options, gltf_data, "res/cube.glb");
     if (gltf_result != cgltf_result_success) fatal("Failed to load GLTF buffers.");
     
     // Load materials
