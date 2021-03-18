@@ -741,6 +741,118 @@ Render* render_init() {
     vkCreateFence(g_device, &fence_info, NULL,
             &self->commands_executed_fence);
 
+    // CREATE BUFFERS
+    // TODO Change MRT UBO to host coherent
+    create_buffer(
+            sizeof(MrtUbo),
+            VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT |
+                    VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+            VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
+            &self->ubo_buffer
+    );
+    create_buffer(
+            sizeof(DeferredUbo),
+            VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT |
+                    VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+            VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
+            &self->deferred_ubo_buffer
+    );
+    create_buffer(
+            sizeof(Light) * LIGHT_COUNT,
+            VK_BUFFER_USAGE_STORAGE_BUFFER_BIT |
+                    VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+            VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
+            &self->lights_buffer
+    );
+
+    // MRT UBO
+    VkDescriptorBufferInfo buffer_info = {
+        .buffer = self->ubo_buffer.buffer,
+        .offset = 0,
+        .range = sizeof(MrtUbo),
+    };
+
+    VkWriteDescriptorSet uniform_write = {
+        .sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+        .dstSet = self->desc_set,
+        .dstBinding = 0,
+        .dstArrayElement = 0,
+        .descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
+        .descriptorCount = 1,
+        .pBufferInfo = &buffer_info,
+    };
+    vkUpdateDescriptorSets(g_device, 1, &uniform_write, 0, NULL);
+
+    // Deferred UBO
+    VkDescriptorBufferInfo deferred_buffer_info = {
+        .buffer = self->deferred_ubo_buffer.buffer,
+        .offset = 0,
+        .range = sizeof(DeferredUbo),
+    };
+
+    VkWriteDescriptorSet deferred_uniform_write = {
+        .sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+        .dstSet = self->desc_set,
+        .dstBinding = 1,
+        .dstArrayElement = 0,
+        .descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
+        .descriptorCount = 1,
+        .pBufferInfo = &deferred_buffer_info,
+    };
+
+    vkUpdateDescriptorSets(g_device, 1, &deferred_uniform_write, 0, NULL);
+
+    // Deferred lights SBO
+    VkDescriptorBufferInfo lights_sbo_info = {
+        .buffer = self->lights_buffer.buffer,
+        .offset = 0,
+        .range = sizeof(Light) * LIGHT_COUNT,
+    };
+
+    VkWriteDescriptorSet lights_sbo_write = {
+        .sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+        .dstSet = self->desc_set,
+        .dstBinding = 2,
+        .dstArrayElement = 0,
+        .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+        .descriptorCount = 1,
+        .pBufferInfo = &lights_sbo_info,
+    };
+    vkUpdateDescriptorSets(g_device, 1, &lights_sbo_write, 0, NULL);
+
+    self->current_frame = 0;
+
+    // Upload lights
+    Light light1 = {
+        .pos = { 3.0, 6.0, 12.0 },
+        .color = { 0.0, 0.0, 1.0 },
+    };
+    Light light2 = {
+        .pos = { -8.0, -2.0, 8.0 },
+        .color = { 1.0, 1.0, 0.0 },
+    };
+    Light lights[2] = {light1, light2};
+
+    upload_to_device_local_buffer(
+            (void*) lights,
+            sizeof(Light) * LIGHT_COUNT,
+            &self->lights_buffer,
+            self->graphics_queue,
+            self->graphics_command_pool
+    );
+
+    // ALLOCATE COMMAND BUFFERS
+    VkCommandBufferAllocateInfo cmdbuf_allocate_info = {
+        .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO,
+        .commandPool = self->graphics_command_pool,
+        .level = VK_COMMAND_BUFFER_LEVEL_PRIMARY,
+        .commandBufferCount = 1,
+    };
+    if (vkAllocateCommandBuffers(g_device, &cmdbuf_allocate_info,
+            &self->command_buffer) != VK_SUCCESS) {
+        fatal("Failed to allocate command buffer.");
+    }
+
     render_swapchain_dependent_init(self);
     return self;
 }
@@ -1280,64 +1392,6 @@ static void render_swapchain_dependent_init(Render* self)
 
     vkDestroyShaderModule(g_device, shader_stages[0].module, NULL);
     vkDestroyShaderModule(g_device, shader_stages[1].module, NULL);
-
-
-    // CREATE BUFFERS
-    // TODO Change MRT UBO to host coherent
-    create_buffer(
-            sizeof(MrtUbo),
-            VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT |
-                    VK_BUFFER_USAGE_TRANSFER_DST_BIT,
-            VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
-            &self->ubo_buffer
-    );
-    create_buffer(
-            sizeof(DeferredUbo),
-            VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT |
-                    VK_BUFFER_USAGE_TRANSFER_DST_BIT,
-            VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
-            &self->deferred_ubo_buffer
-    );
-    create_buffer(
-            sizeof(Light) * LIGHT_COUNT,
-            VK_BUFFER_USAGE_STORAGE_BUFFER_BIT |
-                    VK_BUFFER_USAGE_TRANSFER_DST_BIT,
-            VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
-            &self->lights_buffer
-    );
-
-    self->current_frame = 0;
-
-    // Upload lights
-    Light light1 = {
-        .pos = { 3.0, 6.0, 12.0 },
-        .color = { 0.0, 0.0, 1.0 },
-    };
-    Light light2 = {
-        .pos = { -8.0, -2.0, 8.0 },
-        .color = { 1.0, 1.0, 0.0 },
-    };
-    Light lights[2] = {light1, light2};
-
-    upload_to_device_local_buffer(
-            (void*) lights,
-            sizeof(Light) * LIGHT_COUNT,
-            &self->lights_buffer,
-            self->graphics_queue,
-            self->graphics_command_pool
-    );
-
-    // ALLOCATE COMMAND BUFFERS
-    VkCommandBufferAllocateInfo cmdbuf_allocate_info = {
-        .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO,
-        .commandPool = self->graphics_command_pool,
-        .level = VK_COMMAND_BUFFER_LEVEL_PRIMARY,
-        .commandBufferCount = 1,
-    };
-    if (vkAllocateCommandBuffers(g_device, &cmdbuf_allocate_info,
-            &self->command_buffer) != VK_SUCCESS) {
-        fatal("Failed to allocate command buffer.");
-    }
 }
 
 void render_draw_frame(Render* self, vec3 cam_pos, vec3 cam_dir, vec3 cam_up) {
@@ -1876,61 +1930,6 @@ void render_upload_map_mesh(Render* self)
     mem_free(indices);
 
     cgltf_free(gltf_data);
-
-    // MRT UBO
-    VkDescriptorBufferInfo buffer_info = {
-        .buffer = self->ubo_buffer.buffer,
-        .offset = 0,
-        .range = sizeof(MrtUbo),
-    };
-
-    VkWriteDescriptorSet uniform_write = {
-        .sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
-        .dstSet = self->desc_set,
-        .dstBinding = 0,
-        .dstArrayElement = 0,
-        .descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
-        .descriptorCount = 1,
-        .pBufferInfo = &buffer_info,
-    };
-    vkUpdateDescriptorSets(g_device, 1, &uniform_write, 0, NULL);
-
-    // Deferred UBO
-    VkDescriptorBufferInfo deferred_buffer_info = {
-        .buffer = self->deferred_ubo_buffer.buffer,
-        .offset = 0,
-        .range = sizeof(DeferredUbo),
-    };
-
-    VkWriteDescriptorSet deferred_uniform_write = {
-        .sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
-        .dstSet = self->desc_set,
-        .dstBinding = 1,
-        .dstArrayElement = 0,
-        .descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
-        .descriptorCount = 1,
-        .pBufferInfo = &deferred_buffer_info,
-    };
-
-    vkUpdateDescriptorSets(g_device, 1, &deferred_uniform_write, 0, NULL);
-
-    // Deferred lights SBO
-    VkDescriptorBufferInfo lights_sbo_info = {
-        .buffer = self->lights_buffer.buffer,
-        .offset = 0,
-        .range = sizeof(Light) * LIGHT_COUNT,
-    };
-
-    VkWriteDescriptorSet lights_sbo_write = {
-        .sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
-        .dstSet = self->desc_set,
-        .dstBinding = 2,
-        .dstArrayElement = 0,
-        .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
-        .descriptorCount = 1,
-        .pBufferInfo = &lights_sbo_info,
-    };
-    vkUpdateDescriptorSets(g_device, 1, &lights_sbo_write, 0, NULL);
 }
 
 static void cleanup_swapchain(Render* self)
