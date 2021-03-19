@@ -116,12 +116,8 @@ void destroy_scene(Scene* scene)
 
     destroy_buffer(&scene->lights_buffer);
 
-    if (scene->index_buffer.buffer != VK_NULL_HANDLE) {
-        destroy_buffer(&scene->index_buffer);
-    }
-    if (scene->vertex_buffer.buffer != VK_NULL_HANDLE) {
-        destroy_buffer(&scene->vertex_buffer);
-    }
+    destroy_buffer(&scene->index_buffer);
+    destroy_buffer(&scene->vertex_buffer);
 }
 
 static Scene scene;
