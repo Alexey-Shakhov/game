@@ -17,6 +17,6 @@ typedef struct Vertex {
     vec2 tex_coord;
     vec3 normal;
 } Vertex;
-void render_upload_map_mesh(Render* self);
+void load_scene(Render* self);
 
 #endif

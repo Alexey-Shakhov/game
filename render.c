@@ -1709,7 +1709,7 @@ static void load_texture(Render* self, void* buffer, size_t len,
     vkUpdateDescriptorSets(g_device, 1, &texture_write, 0, NULL);
 }
 
-void render_upload_map_mesh(Render* self)
+void load_scene(Render* self)
 {
     // LOAD GLTF
     cgltf_options gltf_options = {0};
@@ -1915,6 +1915,7 @@ void render_upload_map_mesh(Render* self)
     mem_free(vertices);
     mem_free(indices);
 
+    // Load lights
     create_buffer(
             sizeof(Light) * LIGHT_COUNT,
             VK_BUFFER_USAGE_STORAGE_BUFFER_BIT |
@@ -1922,7 +1923,6 @@ void render_upload_map_mesh(Render* self)
             VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
             &scene.lights_buffer
     );
-    // Upload lights
     Light light1 = {
         .pos = { 3.0, 6.0, 12.0 },
         .color = { 0.0, 0.0, 1.0 },

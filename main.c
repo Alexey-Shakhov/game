@@ -16,7 +16,7 @@ int main()
     mem_init(MBS(24));
 
     Render* render = render_init();
-    render_upload_map_mesh(render);
+    load_scene(render);
 
     vec3 cam_pos = {0.0f, 0.0f, 0.0f};
     vec3 cam_dir = {1.0f, 0.0f, 0.0f};
