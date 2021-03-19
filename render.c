@@ -101,12 +101,6 @@ typedef struct Scene {
     Buffer lights_buffer;
 } Scene;
 
-void scene_init(Scene* scene)
-{
-    scene->vertex_buffer.buffer = VK_NULL_HANDLE;
-    scene->index_buffer.buffer = VK_NULL_HANDLE;
-}
-
 void destroy_scene(Scene* scene)
 {
     for (size_t i=0; i < scene->node_count; i++) mem_free(scene->nodes[i].children);
@@ -279,8 +273,6 @@ static void render_swapchain_dependent_init(Render* self);
 static void recreate_swapchain(Render* self);
 
 Render* render_init() {
-    scene_init(&scene);
-
     // CREATE WINDOW
     // TODO handle errors
     glfwInit();
@@ -1993,7 +1985,6 @@ static void cleanup_swapchain(Render* self)
     for (uint32_t i=0; i < FRAMES_IN_FLIGHT; i++) {
         vkDestroyImageView(g_device, self->swapchain_image_views[i], NULL);
     }
-
 
     vkDestroySwapchainKHR(g_device, self->swapchain, NULL);
 }
