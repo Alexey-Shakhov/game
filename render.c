@@ -129,6 +129,7 @@ void destroy_scene(Scene* scene)
         destroy_buffer(&scene->vertex_buffer);
     }
 }
+
 static Scene scene;
 
 
@@ -786,13 +787,6 @@ Render* render_init() {
             VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
             &self->deferred_ubo_buffer
     );
-    create_buffer(
-            sizeof(Light) * LIGHT_COUNT,
-            VK_BUFFER_USAGE_STORAGE_BUFFER_BIT |
-                    VK_BUFFER_USAGE_TRANSFER_DST_BIT,
-            VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
-            &scene.lights_buffer
-    );
 
     // MRT UBO
     VkDescriptorBufferInfo buffer_info = {
@@ -831,44 +825,7 @@ Render* render_init() {
 
     vkUpdateDescriptorSets(g_device, 1, &deferred_uniform_write, 0, NULL);
 
-    // Deferred lights SBO
-    VkDescriptorBufferInfo lights_sbo_info = {
-        .buffer = scene.lights_buffer.buffer,
-        .offset = 0,
-        .range = sizeof(Light) * LIGHT_COUNT,
-    };
-
-    VkWriteDescriptorSet lights_sbo_write = {
-        .sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
-        .dstSet = self->desc_set,
-        .dstBinding = 2,
-        .dstArrayElement = 0,
-        .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
-        .descriptorCount = 1,
-        .pBufferInfo = &lights_sbo_info,
-    };
-    vkUpdateDescriptorSets(g_device, 1, &lights_sbo_write, 0, NULL);
-
     self->current_frame = 0;
-
-    // Upload lights
-    Light light1 = {
-        .pos = { 3.0, 6.0, 12.0 },
-        .color = { 0.0, 0.0, 1.0 },
-    };
-    Light light2 = {
-        .pos = { -8.0, -2.0, 8.0 },
-        .color = { 1.0, 1.0, 0.0 },
-    };
-    Light lights[2] = {light1, light2};
-
-    upload_to_device_local_buffer(
-            (void*) lights,
-            sizeof(Light) * LIGHT_COUNT,
-            &scene.lights_buffer,
-            self->graphics_queue,
-            self->graphics_command_pool
-    );
 
     // ALLOCATE COMMAND BUFFERS
     VkCommandBufferAllocateInfo cmdbuf_allocate_info = {
@@ -1957,6 +1914,50 @@ void render_upload_map_mesh(Render* self)
     );
     mem_free(vertices);
     mem_free(indices);
+
+    create_buffer(
+            sizeof(Light) * LIGHT_COUNT,
+            VK_BUFFER_USAGE_STORAGE_BUFFER_BIT |
+                    VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+            VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
+            &scene.lights_buffer
+    );
+    // Upload lights
+    Light light1 = {
+        .pos = { 3.0, 6.0, 12.0 },
+        .color = { 0.0, 0.0, 1.0 },
+    };
+    Light light2 = {
+        .pos = { -8.0, -2.0, 8.0 },
+        .color = { 1.0, 1.0, 0.0 },
+    };
+    Light lights[2] = {light1, light2};
+
+    upload_to_device_local_buffer(
+            (void*) lights,
+            sizeof(Light) * LIGHT_COUNT,
+            &scene.lights_buffer,
+            self->graphics_queue,
+            self->graphics_command_pool
+    );
+
+    // Deferred lights SBO
+    VkDescriptorBufferInfo lights_sbo_info = {
+        .buffer = scene.lights_buffer.buffer,
+        .offset = 0,
+        .range = sizeof(Light) * LIGHT_COUNT,
+    };
+
+    VkWriteDescriptorSet lights_sbo_write = {
+        .sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+        .dstSet = self->desc_set,
+        .dstBinding = 2,
+        .dstArrayElement = 0,
+        .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+        .descriptorCount = 1,
+        .pBufferInfo = &lights_sbo_info,
+    };
+    vkUpdateDescriptorSets(g_device, 1, &lights_sbo_write, 0, NULL);
 
     cgltf_free(gltf_data);
 }
