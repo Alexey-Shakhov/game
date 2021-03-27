@@ -271,8 +271,8 @@ static Render render;
 static void render_swapchain_dependent_init();
 static void recreate_swapchain();
 
-void render_init() {
-    // CREATE WINDOW
+void create_window()
+{
     // TODO handle errors
     glfwInit();
     glfwWindowHint(GLFW_CLIENT_API, GLFW_NO_API);
@@ -290,8 +290,10 @@ void render_init() {
             mode->width, mode->height, "Demo", monitor, NULL);
     glfwSetInputMode(g_window, GLFW_CURSOR, GLFW_CURSOR_DISABLED);
     glfwSetInputMode(g_window, GLFW_RAW_MOUSE_MOTION, GLFW_TRUE);
+}
 
-    // CREATE INSTANCE
+void create_instance()
+{
     VkApplicationInfo appInfo = {
         .sType = VK_STRUCTURE_TYPE_APPLICATION_INFO,
         .pApplicationName = APP_NAME,
@@ -318,14 +320,10 @@ void render_init() {
     if (vkCreateInstance(&create_info, NULL, &render.instance) != VK_SUCCESS) {
         fatal("Failed to create instance");
     }
+}
 
-    // CREATE SURFACE
-    if (glfwCreateWindowSurface(
-            render.instance, g_window, NULL, &render.surface) != VK_SUCCESS) {
-        fatal("Failed to create surface.");
-    }
-
-    // PICK PHYSICAL DEVICE
+void pick_physical_device()
+{
     uint32_t dev_count;
     if (vkEnumeratePhysicalDevices(render.instance, &dev_count, NULL) !=
             VK_SUCCESS) fatal("Failed to enumerate physical devices.");
@@ -434,8 +432,10 @@ void render_init() {
         render.present_family = (uint32_t) present;
         g_physical_device = result;
     }
+}
 
-    // CREATE LOGICAL DEVICE
+void create_logical_device()
+{
     uint32_t queue_count;
     if (render.graphics_family != render.present_family) {
         queue_count = 2;
@@ -489,8 +489,10 @@ void render_init() {
     vkGetDeviceQueue(
         g_device, render.present_family, 0, &render.present_queue);
     mem_free(queue_create_infos);
+}
 
-    // CREATE COMMAND POOL
+void create_command_pool()
+{
     VkCommandPoolCreateInfo pool_info = {
         .sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO,
         .queueFamilyIndex = render.graphics_family,
@@ -500,8 +502,10 @@ void render_init() {
             &render.graphics_command_pool) != VK_SUCCESS) {
         fatal("Failed to create command pool.");
     }
+}
 
-    // CREATE TEXTURE SAMPLER
+void create_texture_sampler()
+{
     VkSamplerCreateInfo texture_sampler_info = {
         .sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO,
         .magFilter = VK_FILTER_LINEAR,
@@ -525,6 +529,21 @@ void render_init() {
                 &render.texture_sampler) != VK_SUCCESS) {
         fatal("Failed to create texture sampler.");
     }
+}
+
+void render_init() {
+    create_window();
+    create_instance();
+
+    if (glfwCreateWindowSurface(
+            render.instance, g_window, NULL, &render.surface) != VK_SUCCESS) {
+        fatal("Failed to create surface.");
+    }
+
+    pick_physical_device();
+    create_logical_device();
+    create_command_pool();
+    create_texture_sampler();
 
     // CREATE DESCRIPTOR SET LAYOUTS AND PIPELINE LAYOUT
     VkDescriptorSetLayoutBinding mrt_ubo_binding = {
@@ -1048,6 +1067,8 @@ static void render_swapchain_dependent_init()
             fatal("Failed to create framebuffer.");
         }
     }
+
+    // Light indicators pass
 
     // OFFSCREEN RENDER PASS AND FRAMEBUFFERS
     struct VkAttachmentDescription position_attachment = {
