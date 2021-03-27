@@ -15,8 +15,8 @@ int main()
 {
     mem_init(MBS(24));
 
-    Render* render = render_init();
-    load_scene(render);
+    render_init();
+    load_scene();
 
     vec3 cam_pos = {0.0f, 0.0f, 0.0f};
     vec3 cam_dir = {1.0f, 0.0f, 0.0f};
@@ -26,7 +26,7 @@ int main()
     double mouse_y;
     glfwGetCursorPos(g_window, &mouse_x, &mouse_y);
     // Main loop
-    while (!render_exit(render)) {
+    while (!render_exit()) {
         if (glfwGetKey(g_window, GLFW_KEY_ESCAPE) == GLFW_PRESS) break;
 
         double elapsed = glfwGetTime() - now;
@@ -73,10 +73,10 @@ int main()
             mlook_angle = - (CGLM_PI - up_cam_angle - MLOOK_LIMIT);
         glm_vec3_rotate(cam_dir, mlook_angle, side);
 
-        render_draw_frame(render, cam_pos, cam_dir, cam_up);
+        render_draw_frame(cam_pos, cam_dir, cam_up);
     }
 
-    render_destroy(render);
+    render_destroy();
 
     mem_check();
     mem_inspect();

@@ -266,11 +266,12 @@ typedef struct Render {
 
     size_t current_frame;
 } Render;
+static Render render;
 
-static void render_swapchain_dependent_init(Render* self);
-static void recreate_swapchain(Render* self);
+static void render_swapchain_dependent_init();
+static void recreate_swapchain();
 
-Render* render_init() {
+void render_init() {
     // CREATE WINDOW
     // TODO handle errors
     glfwInit();
@@ -285,7 +286,6 @@ Render* render_init() {
     glfwWindowHint(GLFW_BLUE_BITS, mode->blueBits);
     glfwWindowHint(GLFW_REFRESH_RATE, mode->refreshRate);
      
-    Render* self = (Render*) malloc_nofail(sizeof(Render));
     g_window = glfwCreateWindow(
             mode->width, mode->height, "Demo", monitor, NULL);
     glfwSetInputMode(g_window, GLFW_CURSOR, GLFW_CURSOR_DISABLED);
@@ -315,23 +315,23 @@ Render* render_init() {
     } else {
         create_info.enabledLayerCount = 0;
     }
-    if (vkCreateInstance(&create_info, NULL, &self->instance) != VK_SUCCESS) {
+    if (vkCreateInstance(&create_info, NULL, &render.instance) != VK_SUCCESS) {
         fatal("Failed to create instance");
     }
 
     // CREATE SURFACE
     if (glfwCreateWindowSurface(
-            self->instance, g_window, NULL, &self->surface) != VK_SUCCESS) {
+            render.instance, g_window, NULL, &render.surface) != VK_SUCCESS) {
         fatal("Failed to create surface.");
     }
 
     // PICK PHYSICAL DEVICE
     uint32_t dev_count;
-    if (vkEnumeratePhysicalDevices(self->instance, &dev_count, NULL) !=
+    if (vkEnumeratePhysicalDevices(render.instance, &dev_count, NULL) !=
             VK_SUCCESS) fatal("Failed to enumerate physical devices.");
     VkPhysicalDevice *devices = malloc_nofail(
                                         sizeof(VkPhysicalDevice) * dev_count);
-    if (vkEnumeratePhysicalDevices(self->instance, &dev_count, devices) !=
+    if (vkEnumeratePhysicalDevices(render.instance, &dev_count, devices) !=
             VK_SUCCESS) fatal("Failed to enumerate physical devices.");
 
     VkPhysicalDevice result = VK_NULL_HANDLE;
@@ -364,7 +364,7 @@ Render* render_init() {
         for (int j=0; j < queue_family_count; j++) {
             VkBool32 present_support = VK_FALSE;
             vkGetPhysicalDeviceSurfaceSupportKHR(
-                                g_device, j, self->surface, &present_support);
+                                g_device, j, render.surface, &present_support);
 
             if (present_support == VK_TRUE) {
                 present = j;
@@ -407,14 +407,14 @@ Render* render_init() {
         // TODO check for actual needed format
         uint32_t format_count;
         vkGetPhysicalDeviceSurfaceFormatsKHR(
-                                g_device, self->surface, &format_count, NULL);
+                                g_device, render.surface, &format_count, NULL);
         if (format_count == 0) continue;
 
         // Make sure that present mode count isn't 0
         // TODO check for actual needed present mode
         uint32_t present_mode_count;
         vkGetPhysicalDeviceSurfacePresentModesKHR(
-                            g_device, self->surface, &present_mode_count, NULL);
+                            g_device, render.surface, &present_mode_count, NULL);
         if (present_mode_count == 0) continue;
 
         // Multisampling
@@ -430,14 +430,14 @@ Render* render_init() {
     if (result == VK_NULL_HANDLE) {
         fatal("Failed to find a suitable physical g_device.");
     } else {
-        self->graphics_family = (uint32_t) graphics;
-        self->present_family = (uint32_t) present;
+        render.graphics_family = (uint32_t) graphics;
+        render.present_family = (uint32_t) present;
         g_physical_device = result;
     }
 
     // CREATE LOGICAL DEVICE
     uint32_t queue_count;
-    if (self->graphics_family != self->present_family) {
+    if (render.graphics_family != render.present_family) {
         queue_count = 2;
     } else {
         queue_count = 1;
@@ -449,7 +449,7 @@ Render* render_init() {
     float queue_priority = 1.0f;
     VkDeviceQueueCreateInfo graphics_queue_create_info =  {
         .sType = VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO,
-        .queueFamilyIndex = self->graphics_family,
+        .queueFamilyIndex = render.graphics_family,
         .queueCount = 1,
         .pQueuePriorities = &queue_priority,
     };
@@ -459,7 +459,7 @@ Render* render_init() {
     if (queue_count > 1) {
         VkDeviceQueueCreateInfo present_queue_create_info = {
             .sType = VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO,
-            .queueFamilyIndex = self->present_family,
+            .queueFamilyIndex = render.present_family,
             .queueCount = 1,
             .pQueuePriorities = &queue_priority,
         };
@@ -485,19 +485,19 @@ Render* render_init() {
             VK_SUCCESS) fatal("Failed to create logical g_device.");
 
     vkGetDeviceQueue(
-        g_device, self->graphics_family, 0, &self->graphics_queue);
+        g_device, render.graphics_family, 0, &render.graphics_queue);
     vkGetDeviceQueue(
-        g_device, self->present_family, 0, &self->present_queue);
+        g_device, render.present_family, 0, &render.present_queue);
     mem_free(queue_create_infos);
 
     // CREATE COMMAND POOL
     VkCommandPoolCreateInfo pool_info = {
         .sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO,
-        .queueFamilyIndex = self->graphics_family,
+        .queueFamilyIndex = render.graphics_family,
         .flags = VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT,
     };
     if (vkCreateCommandPool(g_device, &pool_info, NULL, 
-            &self->graphics_command_pool) != VK_SUCCESS) {
+            &render.graphics_command_pool) != VK_SUCCESS) {
         fatal("Failed to create command pool.");
     }
 
@@ -522,7 +522,7 @@ Render* render_init() {
     };
 
     if (vkCreateSampler(g_device, &texture_sampler_info, NULL,
-                &self->texture_sampler) != VK_SUCCESS) {
+                &render.texture_sampler) != VK_SUCCESS) {
         fatal("Failed to create texture sampler.");
     }
 
@@ -554,7 +554,7 @@ Render* render_init() {
         .pBindings = desc_set_bindings,
     };
     if (vkCreateDescriptorSetLayout(g_device, &desc_set_info, NULL,
-            &self->desc_set_layout) != VK_SUCCESS) {
+            &render.desc_set_layout) != VK_SUCCESS) {
         fatal("Failed to create descriptor set layout.");
     }
 
@@ -581,7 +581,7 @@ Render* render_init() {
         .maxSets = 1,
     };
     if (vkCreateDescriptorPool(
-            g_device, &desc_pool_info, NULL, &self->descriptor_pool)
+            g_device, &desc_pool_info, NULL, &render.descriptor_pool)
             != VK_SUCCESS) {
         fatal("Failed to create descriptor pool.");
     }
@@ -598,7 +598,7 @@ Render* render_init() {
         .maxSets = 1,
     };
     if (vkCreateDescriptorPool(
-            g_device, &gbuf_desc_pool_info, NULL, &self->gbuf_descriptor_pool)
+            g_device, &gbuf_desc_pool_info, NULL, &render.gbuf_descriptor_pool)
             != VK_SUCCESS) {
         fatal("Failed to create descriptor pool.");
     }
@@ -615,7 +615,7 @@ Render* render_init() {
         .maxSets = MAX_TEXTURES,
     };
     if (vkCreateDescriptorPool(
-            g_device, &texture_pool_info, NULL, &self->texture_descriptor_pool)
+            g_device, &texture_pool_info, NULL, &render.texture_descriptor_pool)
             != VK_SUCCESS) {
         fatal("Failed to create texture descriptor pool.");
     }
@@ -623,12 +623,12 @@ Render* render_init() {
     // Allocate UBO descriptor set
     VkDescriptorSetAllocateInfo desc_set_alloc_info = {
         .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO,
-        .descriptorPool = self->descriptor_pool,
+        .descriptorPool = render.descriptor_pool,
         .descriptorSetCount = 1,
-        .pSetLayouts = &self->desc_set_layout,
+        .pSetLayouts = &render.desc_set_layout,
     };
     if (vkAllocateDescriptorSets(
-            g_device, &desc_set_alloc_info, &self->desc_set
+            g_device, &desc_set_alloc_info, &render.desc_set
             ) != VK_SUCCESS) {
         fatal("Failed to allocate descriptor sets.");
     }
@@ -660,7 +660,7 @@ Render* render_init() {
         .pBindings = gbuf_bindings,
     };
     if (vkCreateDescriptorSetLayout(g_device, &gbuf_desc_set_info, NULL,
-            &self->gbuf_desc_set_layout) != VK_SUCCESS) {
+            &render.gbuf_desc_set_layout) != VK_SUCCESS) {
         fatal("Failed to create descriptor set layout.");
     }
 
@@ -685,19 +685,19 @@ Render* render_init() {
     };
 
     if (vkCreateSampler(g_device, &gbuf_sampler_info, NULL,
-                &self->gbuf_sampler) != VK_SUCCESS) {
+                &render.gbuf_sampler) != VK_SUCCESS) {
         fatal("Failed to create G-buffer sampler.");
     }
 
     // Allocate descriptor set for G-buffer attachments
     VkDescriptorSetAllocateInfo gbuf_desc_set_alloc_info = {
         .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO,
-        .descriptorPool = self->gbuf_descriptor_pool,
+        .descriptorPool = render.gbuf_descriptor_pool,
         .descriptorSetCount = 1,
-        .pSetLayouts = &self->gbuf_desc_set_layout,
+        .pSetLayouts = &render.gbuf_desc_set_layout,
     };
     if (vkAllocateDescriptorSets(
-            g_device, &gbuf_desc_set_alloc_info, &self->gbuf_desc_set
+            g_device, &gbuf_desc_set_alloc_info, &render.gbuf_desc_set
             ) != VK_SUCCESS) {
         fatal("Failed to allocate descriptor sets.");
     }
@@ -715,7 +715,7 @@ Render* render_init() {
         .pBindings = &texture_sampler_binding,
     };
     if (vkCreateDescriptorSetLayout(g_device, &texture_set_info, NULL,
-            &self->texture_set_layout) != VK_SUCCESS) {
+            &render.texture_set_layout) != VK_SUCCESS) {
         fatal("Failed to create texture descriptor set layout.");
     }
 
@@ -726,8 +726,8 @@ Render* render_init() {
     };
 
     VkDescriptorSetLayout set_layouts[3] = {
-        self->desc_set_layout, self->texture_set_layout,
-        self->gbuf_desc_set_layout
+        render.desc_set_layout, render.texture_set_layout,
+        render.gbuf_desc_set_layout
     };
 
     const VkPipelineLayoutCreateInfo pipeline_layout_info = {
@@ -742,7 +742,7 @@ Render* render_init() {
                             g_device,
                             &pipeline_layout_info,
                             NULL,
-                            &self->graphics_pipeline_layout) != VK_SUCCESS) {
+                            &render.graphics_pipeline_layout) != VK_SUCCESS) {
         fatal("Failed to create pipeline layout.");
     }
 
@@ -755,11 +755,11 @@ Render* render_init() {
         .flags = VK_FENCE_CREATE_SIGNALED_BIT,
     };
     vkCreateSemaphore(g_device, &semaphore_info, NULL,
-            &self->image_available_semaphore);
+            &render.image_available_semaphore);
     vkCreateSemaphore(g_device, &semaphore_info, NULL,
-            &self->draw_finished_semaphore);
+            &render.draw_finished_semaphore);
     vkCreateFence(g_device, &fence_info, NULL,
-            &self->commands_executed_fence);
+            &render.commands_executed_fence);
 
     // CREATE BUFFERS
     // TODO Change MRT UBO to host coherent
@@ -768,26 +768,26 @@ Render* render_init() {
             VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT |
                     VK_BUFFER_USAGE_TRANSFER_DST_BIT,
             VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
-            &self->ubo_buffer
+            &render.ubo_buffer
     );
     create_buffer(
             sizeof(DeferredUbo),
             VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT |
                     VK_BUFFER_USAGE_TRANSFER_DST_BIT,
             VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
-            &self->deferred_ubo_buffer
+            &render.deferred_ubo_buffer
     );
 
     // MRT UBO
     VkDescriptorBufferInfo buffer_info = {
-        .buffer = self->ubo_buffer.buffer,
+        .buffer = render.ubo_buffer.buffer,
         .offset = 0,
         .range = sizeof(MrtUbo),
     };
 
     VkWriteDescriptorSet uniform_write = {
         .sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
-        .dstSet = self->desc_set,
+        .dstSet = render.desc_set,
         .dstBinding = 0,
         .dstArrayElement = 0,
         .descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
@@ -798,14 +798,14 @@ Render* render_init() {
 
     // Deferred UBO
     VkDescriptorBufferInfo deferred_buffer_info = {
-        .buffer = self->deferred_ubo_buffer.buffer,
+        .buffer = render.deferred_ubo_buffer.buffer,
         .offset = 0,
         .range = sizeof(DeferredUbo),
     };
 
     VkWriteDescriptorSet deferred_uniform_write = {
         .sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
-        .dstSet = self->desc_set,
+        .dstSet = render.desc_set,
         .dstBinding = 1,
         .dstArrayElement = 0,
         .descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
@@ -815,35 +815,34 @@ Render* render_init() {
 
     vkUpdateDescriptorSets(g_device, 1, &deferred_uniform_write, 0, NULL);
 
-    self->current_frame = 0;
+    render.current_frame = 0;
 
     // ALLOCATE COMMAND BUFFERS
     VkCommandBufferAllocateInfo cmdbuf_allocate_info = {
         .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO,
-        .commandPool = self->graphics_command_pool,
+        .commandPool = render.graphics_command_pool,
         .level = VK_COMMAND_BUFFER_LEVEL_PRIMARY,
         .commandBufferCount = 1,
     };
     if (vkAllocateCommandBuffers(g_device, &cmdbuf_allocate_info,
-            &self->command_buffer) != VK_SUCCESS) {
+            &render.command_buffer) != VK_SUCCESS) {
         fatal("Failed to allocate command buffer.");
     }
 
-    render_swapchain_dependent_init(self);
-    return self;
+    render_swapchain_dependent_init();
 }
 
-static void render_swapchain_dependent_init(Render* self)
+static void render_swapchain_dependent_init()
 {
     // CREATE SWAPCHAIN
     // Choose swap surface format
     uint32_t format_count;
     vkGetPhysicalDeviceSurfaceFormatsKHR(
-                    g_physical_device, self->surface, &format_count, NULL);
+                    g_physical_device, render.surface, &format_count, NULL);
     VkSurfaceFormatKHR *const formats = 
             malloc_nofail(sizeof(VkSurfaceFormatKHR) * format_count);
     vkGetPhysicalDeviceSurfaceFormatsKHR(
-                g_physical_device, self->surface, &format_count, formats);
+                g_physical_device, render.surface, &format_count, formats);
 
     VkSurfaceFormatKHR format;
     bool format_found = false;
@@ -871,11 +870,11 @@ static void render_swapchain_dependent_init(Render* self)
     // Choose present mode
     uint32_t present_mode_count;
     vkGetPhysicalDeviceSurfacePresentModesKHR(
-            g_physical_device, self->surface, &present_mode_count, NULL);
+            g_physical_device, render.surface, &present_mode_count, NULL);
     VkPresentModeKHR* present_modes =
         malloc_nofail(sizeof(VkPresentModeKHR) * present_mode_count);
     vkGetPhysicalDeviceSurfacePresentModesKHR(
-        g_physical_device, self->surface, &present_mode_count, present_modes);
+        g_physical_device, render.surface, &present_mode_count, present_modes);
 
     VkPresentModeKHR present_mode = VK_PRESENT_MODE_FIFO_KHR;
     for (size_t i=0; i < present_mode_count; i++) {
@@ -891,7 +890,7 @@ static void render_swapchain_dependent_init(Render* self)
     // Choose swap extent
     VkSurfaceCapabilitiesKHR capabilities;
     vkGetPhysicalDeviceSurfaceCapabilitiesKHR(
-                            g_physical_device, self->surface, &capabilities);
+                            g_physical_device, render.surface, &capabilities);
     VkExtent2D extent;
     if (capabilities.currentExtent.width != UINT32_MAX) {
         extent = capabilities.currentExtent;
@@ -915,7 +914,7 @@ static void render_swapchain_dependent_init(Render* self)
 
     struct VkSwapchainCreateInfoKHR swapchain_create_info = {
         .sType = VK_STRUCTURE_TYPE_SWAPCHAIN_CREATE_INFO_KHR,
-        .surface = self->surface,
+        .surface = render.surface,
         .minImageCount = FRAMES_IN_FLIGHT, // ! hard condition
         .imageFormat = format.format,
         .imageColorSpace = format.colorSpace,
@@ -929,13 +928,13 @@ static void render_swapchain_dependent_init(Render* self)
         .clipped = VK_TRUE,
         .oldSwapchain = VK_NULL_HANDLE,
     };
-    self->swapchain_format = format.format;
-    self->swapchain_extent = extent;
+    render.swapchain_format = format.format;
+    render.swapchain_extent = extent;
 
-    if (self->graphics_family != self->present_family) {
+    if (render.graphics_family != render.present_family) {
         uint32_t queue_family_indices[] = {
-            self->graphics_family,
-            self->present_family,
+            render.graphics_family,
+            render.present_family,
         };
 
         swapchain_create_info.imageSharingMode = VK_SHARING_MODE_CONCURRENT;
@@ -946,25 +945,25 @@ static void render_swapchain_dependent_init(Render* self)
     }
 
     if (vkCreateSwapchainKHR(
-      g_device, &swapchain_create_info, NULL, &self->swapchain) != VK_SUCCESS) {
+      g_device, &swapchain_create_info, NULL, &render.swapchain) != VK_SUCCESS) {
             fatal("Failed to create swapchain.");
     }
 
     uint32_t image_count;
-    vkGetSwapchainImagesKHR(g_device, self->swapchain, &image_count, NULL);
+    vkGetSwapchainImagesKHR(g_device, render.swapchain, &image_count, NULL);
     DBASSERT(image_count == FRAMES_IN_FLIGHT);
     vkGetSwapchainImagesKHR(
-          g_device, self->swapchain, &image_count, self->swapchain_images);
+          g_device, render.swapchain, &image_count, render.swapchain_images);
 
     for (uint32_t i=0; i < FRAMES_IN_FLIGHT; i++) {
-        create_2d_image_view(self->swapchain_images[i],
-            self->swapchain_format, VK_IMAGE_ASPECT_COLOR_BIT,
-            &self->swapchain_image_views[i]);
+        create_2d_image_view(render.swapchain_images[i],
+            render.swapchain_format, VK_IMAGE_ASPECT_COLOR_BIT,
+            &render.swapchain_image_views[i]);
     }
 
     // FINAL COMPOSITION RENDER PASS AND FRAMEBUFFER
     struct VkAttachmentDescription color_attachment = {
-        .format = self->swapchain_format,
+        .format = render.swapchain_format,
         .samples = VK_SAMPLE_COUNT_1_BIT,
         .loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR,
         .storeOp = VK_ATTACHMENT_STORE_OP_STORE,
@@ -1027,25 +1026,25 @@ static void render_swapchain_dependent_init(Render* self)
     };
 
     if (vkCreateRenderPass(
-           g_device, &render_pass_info, NULL, &self->render_pass) !=
+           g_device, &render_pass_info, NULL, &render.render_pass) !=
            VK_SUCCESS) fatal("Failed to create render pass.");
 
     for (int i=0; i < FRAMES_IN_FLIGHT; i++) {
         VkImageView attachments[1] = {
-            self->swapchain_image_views[i],
+            render.swapchain_image_views[i],
         };
         VkFramebufferCreateInfo framebuffer_info = {
             .sType = VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO,
-            .renderPass = self->render_pass,
+            .renderPass = render.render_pass,
             .attachmentCount = attachment_count,
             .pAttachments = attachments,
-            .width = self->swapchain_extent.width,
-            .height = self->swapchain_extent.height,
+            .width = render.swapchain_extent.width,
+            .height = render.swapchain_extent.height,
             .layers = 1,
         };
 
         if (vkCreateFramebuffer(g_device, &framebuffer_info, NULL,
-                &self->framebuffers[i]) != VK_SUCCESS) {
+                &render.framebuffers[i]) != VK_SUCCESS) {
             fatal("Failed to create framebuffer.");
         }
     }
@@ -1122,27 +1121,27 @@ static void render_swapchain_dependent_init(Render* self)
 
     if (vkCreateRenderPass(
            g_device, &offscreen_render_pass_info, NULL,
-           &self->offscreen_render_pass) != VK_SUCCESS)
+           &render.offscreen_render_pass) != VK_SUCCESS)
         fatal("Failed to create render pass.");
 
-    create_attachment(&self->offscreen_depth, self->swapchain_extent.width,self->swapchain_extent.height,
+    create_attachment(&render.offscreen_depth, render.swapchain_extent.width,render.swapchain_extent.height,
         depth_format, VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT);
-    create_attachment(&self->offscreen_position, self->swapchain_extent.width, self->swapchain_extent.height,
+    create_attachment(&render.offscreen_position, render.swapchain_extent.width, render.swapchain_extent.height,
         position_attachment.format, VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT);
-    create_attachment(&self->offscreen_albedo, self->swapchain_extent.width, self->swapchain_extent.height,
+    create_attachment(&render.offscreen_albedo, render.swapchain_extent.width, render.swapchain_extent.height,
         albedo_attachment.format, VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT);
-    create_attachment(&self->offscreen_normal, self->swapchain_extent.width, self->swapchain_extent.height,
+    create_attachment(&render.offscreen_normal, render.swapchain_extent.width, render.swapchain_extent.height,
         normal_attachment.format, VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT);
 
     // Write G-buffer descriptors
     VkDescriptorImageInfo gbuf_desc_info = {
         .imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
-        .imageView = self->offscreen_position.view,
-        .sampler = self->gbuf_sampler,
+        .imageView = render.offscreen_position.view,
+        .sampler = render.gbuf_sampler,
     };
     VkWriteDescriptorSet gbuf_desc_write = {
         .sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
-        .dstSet = self->gbuf_desc_set,
+        .dstSet = render.gbuf_desc_set,
         .dstBinding = 0,
         .dstArrayElement = 0,
         .descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
@@ -1151,33 +1150,33 @@ static void render_swapchain_dependent_init(Render* self)
     };
     vkUpdateDescriptorSets(g_device, 1, &gbuf_desc_write, 0, NULL);
 
-    gbuf_desc_info.imageView = self->offscreen_normal.view;
+    gbuf_desc_info.imageView = render.offscreen_normal.view;
     gbuf_desc_write.dstBinding = 1;
     vkUpdateDescriptorSets(g_device, 1, &gbuf_desc_write, 0, NULL);
 
-    gbuf_desc_info.imageView = self->offscreen_albedo.view;
+    gbuf_desc_info.imageView = render.offscreen_albedo.view;
     gbuf_desc_write.dstBinding = 2;
     vkUpdateDescriptorSets(g_device, 1, &gbuf_desc_write, 0, NULL);
 
     // Offscreen framebuffer
     VkImageView offscreen_attachments[4] = {
-        self->offscreen_position.view,
-        self->offscreen_normal.view,
-        self->offscreen_albedo.view,
-        self->offscreen_depth.view,
+        render.offscreen_position.view,
+        render.offscreen_normal.view,
+        render.offscreen_albedo.view,
+        render.offscreen_depth.view,
     };
     VkFramebufferCreateInfo offscreen_framebuffer_info = {
         .sType = VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO,
-        .renderPass = self->offscreen_render_pass,
+        .renderPass = render.offscreen_render_pass,
         .attachmentCount = 4,
         .pAttachments = offscreen_attachments,
-        .width = self->swapchain_extent.width,
-        .height = self->swapchain_extent.height,
+        .width = render.swapchain_extent.width,
+        .height = render.swapchain_extent.height,
         .layers = 1,
     };
 
     if (vkCreateFramebuffer(g_device, &offscreen_framebuffer_info, NULL,
-            &self->offscreen_framebuffer) != VK_SUCCESS) {
+            &render.offscreen_framebuffer) != VK_SUCCESS) {
         fatal("Failed to create framebuffer.");
     }
 
@@ -1191,15 +1190,15 @@ static void render_swapchain_dependent_init(Render* self)
     const VkViewport viewport = {
         .x = 0.0f,
         .y = 0.0f,
-        .width  = (float) self->swapchain_extent.width,
-        .height = (float) self->swapchain_extent.height,
+        .width  = (float) render.swapchain_extent.width,
+        .height = (float) render.swapchain_extent.height,
         .minDepth = 0.0f,
         .maxDepth = 1.0f,
     };
 
     const VkRect2D scissor = {
         .offset = {0, 0},
-        .extent = self->swapchain_extent,
+        .extent = render.swapchain_extent,
     };
 
     const VkPipelineViewportStateCreateInfo viewport_state = {
@@ -1291,8 +1290,8 @@ static void render_swapchain_dependent_init(Render* self)
         .pMultisampleState = &multisampling,
         .pColorBlendState = &color_blending,
         .pDepthStencilState = &depth_stencil,
-        .layout = self->graphics_pipeline_layout,
-        .renderPass = self->render_pass,
+        .layout = render.graphics_pipeline_layout,
+        .renderPass = render.render_pass,
         .subpass = 0,
     };
 
@@ -1302,7 +1301,7 @@ static void render_swapchain_dependent_init(Render* self)
                               1,
                               &pipeline_info,
                               NULL,
-                              &self->graphics_pipeline) != VK_SUCCESS) {
+                              &render.graphics_pipeline) != VK_SUCCESS) {
         fatal("Failed to create graphics pipeline.");
     }
 
@@ -1348,7 +1347,7 @@ static void render_swapchain_dependent_init(Render* self)
     };
 
     pipeline_info.pVertexInputState = &vertex_input_info;
-    pipeline_info.renderPass = self->offscreen_render_pass;
+    pipeline_info.renderPass = render.offscreen_render_pass;
 
     VkPipelineColorBlendAttachmentState blend_states[3] = {
         color_blend_attachment, color_blend_attachment, color_blend_attachment, 
@@ -1362,7 +1361,7 @@ static void render_swapchain_dependent_init(Render* self)
                           1,
                           &pipeline_info,
                           NULL,
-                          &self->offscreen_graphics_pipeline) != VK_SUCCESS) {
+                          &render.offscreen_graphics_pipeline) != VK_SUCCESS) {
         fatal("Failed to create graphics pipeline.");
     }
 
@@ -1370,15 +1369,15 @@ static void render_swapchain_dependent_init(Render* self)
     vkDestroyShaderModule(g_device, shader_stages[1].module, NULL);
 }
 
-void render_draw_frame(Render* self, vec3 cam_pos, vec3 cam_dir, vec3 cam_up) {
-    size_t current_frame = self->current_frame;
+void render_draw_frame(vec3 cam_pos, vec3 cam_dir, vec3 cam_up) {
+    size_t current_frame = render.current_frame;
 
     // Upload MRT UBO
     MrtUbo uniform;
     mat4 proj;
     glm_perspective(0.6,
-        self->swapchain_extent.width /
-        (float) self->swapchain_extent.height, 0.01, 1000.0, proj);
+        render.swapchain_extent.width /
+        (float) render.swapchain_extent.height, 0.01, 1000.0, proj);
     proj[1][1] *= -1;
     mat4 view;
     glm_look(cam_pos, cam_dir, cam_up, view);
@@ -1386,9 +1385,9 @@ void render_draw_frame(Render* self, vec3 cam_pos, vec3 cam_dir, vec3 cam_up) {
     upload_to_device_local_buffer(
             (void*) &uniform,
             sizeof(uniform),
-            &self->ubo_buffer,
-            self->graphics_queue,
-            self->graphics_command_pool
+            &render.ubo_buffer,
+            render.graphics_queue,
+            render.graphics_command_pool
     );
 
     // Upload deferred fragment shader UBO
@@ -1398,19 +1397,19 @@ void render_draw_frame(Render* self, vec3 cam_pos, vec3 cam_dir, vec3 cam_up) {
     upload_to_device_local_buffer(
             (void*) &defubo,
             sizeof(defubo),
-            &self->deferred_ubo_buffer,
-            self->graphics_queue,
-            self->graphics_command_pool
+            &render.deferred_ubo_buffer,
+            render.graphics_queue,
+            render.graphics_command_pool
     );
 
     uint32_t image_index;
     VkResult acquire_image_result =
-        vkAcquireNextImageKHR(g_device, self->swapchain, UINT64_MAX,
-                self->image_available_semaphore, VK_NULL_HANDLE,
+        vkAcquireNextImageKHR(g_device, render.swapchain, UINT64_MAX,
+                render.image_available_semaphore, VK_NULL_HANDLE,
                 &image_index);
 
     if (acquire_image_result == VK_ERROR_OUT_OF_DATE_KHR) {
-        recreate_swapchain(self);
+        recreate_swapchain();
         return;
     } else if (acquire_image_result != VK_SUCCESS &&
             acquire_image_result != VK_SUBOPTIMAL_KHR) {
@@ -1418,13 +1417,13 @@ void render_draw_frame(Render* self, vec3 cam_pos, vec3 cam_dir, vec3 cam_up) {
     }
 
     vkWaitForFences(
-            g_device, 1, &self->commands_executed_fence,
+            g_device, 1, &render.commands_executed_fence,
             VK_TRUE, UINT64_MAX);
     VkCommandBufferBeginInfo begin_info = {
         .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
         .flags = VK_COMMAND_BUFFER_USAGE_SIMULTANEOUS_USE_BIT,
     };
-    if (vkBeginCommandBuffer(self->command_buffer, &begin_info) !=
+    if (vkBeginCommandBuffer(render.command_buffer, &begin_info) !=
             VK_SUCCESS) {
         fatal("Failed to begin recording command buffer.");
     }
@@ -1436,29 +1435,29 @@ void render_draw_frame(Render* self, vec3 cam_pos, vec3 cam_dir, vec3 cam_up) {
     };
     VkRenderPassBeginInfo render_pass_info = {
         .sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO,
-        .renderPass = self->offscreen_render_pass,
-        .framebuffer = self->offscreen_framebuffer,
+        .renderPass = render.offscreen_render_pass,
+        .framebuffer = render.offscreen_framebuffer,
         .renderArea.offset = {0, 0},
-        .renderArea.extent = self->swapchain_extent,
+        .renderArea.extent = render.swapchain_extent,
         .clearValueCount = 4,
         .pClearValues = clear_values,
     };
 
-    vkCmdBeginRenderPass(self->command_buffer, &render_pass_info,
+    vkCmdBeginRenderPass(render.command_buffer, &render_pass_info,
                              VK_SUBPASS_CONTENTS_INLINE);
 
-    vkCmdBindPipeline(self->command_buffer,
-            VK_PIPELINE_BIND_POINT_GRAPHICS, self->offscreen_graphics_pipeline);
+    vkCmdBindPipeline(render.command_buffer,
+            VK_PIPELINE_BIND_POINT_GRAPHICS, render.offscreen_graphics_pipeline);
 
     VkDeviceSize offset = 0;
-    vkCmdBindVertexBuffers(self->command_buffer, 0, 1,
+    vkCmdBindVertexBuffers(render.command_buffer, 0, 1,
             &scene.vertex_buffer.buffer, &offset);
     vkCmdBindIndexBuffer(
-            self->command_buffer, scene.index_buffer.buffer, 0,
+            render.command_buffer, scene.index_buffer.buffer, 0,
             VK_INDEX_TYPE_UINT16);
-    vkCmdBindDescriptorSets(self->command_buffer,
-            VK_PIPELINE_BIND_POINT_GRAPHICS, self->graphics_pipeline_layout,
-            0, 1, &self->desc_set, 0, NULL);
+    vkCmdBindDescriptorSets(render.command_buffer,
+            VK_PIPELINE_BIND_POINT_GRAPHICS, render.graphics_pipeline_layout,
+            0, 1, &render.desc_set, 0, NULL);
 
     // Draw the nodes
     for (size_t n=0; n < scene.node_count; n++) {
@@ -1476,8 +1475,8 @@ void render_draw_frame(Render* self, vec3 cam_pos, vec3 cam_dir, vec3 cam_up) {
         }
 
         vkCmdPushConstants(
-                self->command_buffer,
-                self->graphics_pipeline_layout,
+                render.command_buffer,
+                render.graphics_pipeline_layout,
                 VK_SHADER_STAGE_VERTEX_BIT,
                 0,
                 sizeof(PushConstants),
@@ -1486,19 +1485,19 @@ void render_draw_frame(Render* self, vec3 cam_pos, vec3 cam_dir, vec3 cam_up) {
         for (size_t p=0; p < mesh->primitives_count; p++) {
             Primitive* primitive = &mesh->primitives[p];
             vkCmdBindDescriptorSets(
-                self->command_buffer,
-                VK_PIPELINE_BIND_POINT_GRAPHICS, self->graphics_pipeline_layout,
+                render.command_buffer,
+                VK_PIPELINE_BIND_POINT_GRAPHICS, render.graphics_pipeline_layout,
                 1, 1, &primitive->texture, 0, NULL);
-            vkCmdDrawIndexed(self->command_buffer,
+            vkCmdDrawIndexed(render.command_buffer,
                 primitive->index_count, 1, primitive->index_offset,
                 primitive->vertex_offset, 0);
         }
     }
 
-    vkCmdEndRenderPass(self->command_buffer);
+    vkCmdEndRenderPass(render.command_buffer);
 
-    render_pass_info.renderPass = self->render_pass;
-    render_pass_info.framebuffer = self->framebuffers[current_frame];
+    render_pass_info.renderPass = render.render_pass;
+    render_pass_info.framebuffer = render.framebuffers[current_frame];
     VkClearValue deferred_clear_values[2] = {
         { .color = {0.0f, 0.0f, 0.0f, 0.0f} },
         { .depthStencil = {1.0f, 0} },
@@ -1506,20 +1505,20 @@ void render_draw_frame(Render* self, vec3 cam_pos, vec3 cam_dir, vec3 cam_up) {
     render_pass_info.clearValueCount = 2;
     render_pass_info.pClearValues = deferred_clear_values;
 
-    vkCmdBeginRenderPass(self->command_buffer, &render_pass_info,
+    vkCmdBeginRenderPass(render.command_buffer, &render_pass_info,
                          VK_SUBPASS_CONTENTS_INLINE);
-    vkCmdBindDescriptorSets(self->command_buffer,
-            VK_PIPELINE_BIND_POINT_GRAPHICS, self->graphics_pipeline_layout,
-            0, 1, &self->desc_set, 0, NULL);
-    vkCmdBindDescriptorSets(self->command_buffer,
-            VK_PIPELINE_BIND_POINT_GRAPHICS, self->graphics_pipeline_layout,
-            2, 1, &self->gbuf_desc_set, 0, NULL);
-    vkCmdBindPipeline(self->command_buffer,
-            VK_PIPELINE_BIND_POINT_GRAPHICS, self->graphics_pipeline);
-    vkCmdDraw(self->command_buffer, 3, 1, 0, 0);
-    vkCmdEndRenderPass(self->command_buffer);
+    vkCmdBindDescriptorSets(render.command_buffer,
+            VK_PIPELINE_BIND_POINT_GRAPHICS, render.graphics_pipeline_layout,
+            0, 1, &render.desc_set, 0, NULL);
+    vkCmdBindDescriptorSets(render.command_buffer,
+            VK_PIPELINE_BIND_POINT_GRAPHICS, render.graphics_pipeline_layout,
+            2, 1, &render.gbuf_desc_set, 0, NULL);
+    vkCmdBindPipeline(render.command_buffer,
+            VK_PIPELINE_BIND_POINT_GRAPHICS, render.graphics_pipeline);
+    vkCmdDraw(render.command_buffer, 3, 1, 0, 0);
+    vkCmdEndRenderPass(render.command_buffer);
 
-    if (vkEndCommandBuffer(self->command_buffer) != VK_SUCCESS) {
+    if (vkEndCommandBuffer(render.command_buffer) != VK_SUCCESS) {
         fatal("Failed to record command buffer.");
     }
 
@@ -1527,48 +1526,47 @@ void render_draw_frame(Render* self, vec3 cam_pos, vec3 cam_dir, vec3 cam_up) {
     VkSubmitInfo submit_info = {
         .sType = VK_STRUCTURE_TYPE_SUBMIT_INFO,
         .waitSemaphoreCount = 1,
-        .pWaitSemaphores = &self->image_available_semaphore,
+        .pWaitSemaphores = &render.image_available_semaphore,
         .pWaitDstStageMask = &wait_mask,
         .commandBufferCount = 1,
-        .pCommandBuffers = &self->command_buffer,
+        .pCommandBuffers = &render.command_buffer,
         .signalSemaphoreCount = 1,
-        .pSignalSemaphores = &self->draw_finished_semaphore,
+        .pSignalSemaphores = &render.draw_finished_semaphore,
     };
 
-    vkResetFences(g_device, 1, &self->commands_executed_fence);
+    vkResetFences(g_device, 1, &render.commands_executed_fence);
 
-    if (vkQueueSubmit(self->graphics_queue, 1, &submit_info,
-            self->commands_executed_fence) != VK_SUCCESS) {
+    if (vkQueueSubmit(render.graphics_queue, 1, &submit_info,
+            render.commands_executed_fence) != VK_SUCCESS) {
         fatal("Failed to submit draw command buffer.");
     }
 
     VkPresentInfoKHR present_info = {
         .sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR,
         .waitSemaphoreCount = 1,
-        .pWaitSemaphores = &self->draw_finished_semaphore,
+        .pWaitSemaphores = &render.draw_finished_semaphore,
         .swapchainCount = 1,
-        .pSwapchains = &self->swapchain,
+        .pSwapchains = &render.swapchain,
         .pImageIndices = &image_index,
     };
-    VkResult present_result = vkQueuePresentKHR(self->present_queue, &present_info);
+    VkResult present_result = vkQueuePresentKHR(render.present_queue, &present_info);
     if (present_result == VK_ERROR_OUT_OF_DATE_KHR ||
             present_result == VK_SUBOPTIMAL_KHR) {
-        recreate_swapchain(self);
+        recreate_swapchain();
     } else if (present_result != VK_SUCCESS) {
         fatal("Failed to present swapchain image.");
     }
 
-    self->current_frame = (current_frame + 1) % 2;
+    render.current_frame = (current_frame + 1) % 2;
 
     glfwPollEvents();
 }
 
-bool render_exit(Render* render) {
+bool render_exit() {
     return glfwWindowShouldClose(g_window);
 }
 
-static void load_texture(Render* self, void* buffer, size_t len,
-        Texture* texture)
+static void load_texture(void* buffer, size_t len, Texture* texture)
 {
     // Load pixels
     int tex_width, tex_height, tex_channels;
@@ -1592,7 +1590,7 @@ static void load_texture(Render* self, void* buffer, size_t len,
     {
     // Transition image layout for upload
     VkCommandBuffer cmdbuf = begin_one_time_command_buffer(
-            self->graphics_command_pool);
+            render.graphics_command_pool);
     VkImageMemoryBarrier barrier = {
         .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
         .oldLayout = VK_IMAGE_LAYOUT_UNDEFINED,
@@ -1611,14 +1609,14 @@ static void load_texture(Render* self, void* buffer, size_t len,
     vkCmdPipelineBarrier(cmdbuf, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
             VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, NULL, 0, NULL, 1, &barrier);
     submit_one_time_command_buffer(
-            self->graphics_queue, cmdbuf,
-            self->graphics_command_pool);
+            render.graphics_queue, cmdbuf,
+            render.graphics_command_pool);
     }
 
     {
     // Copy staging buffer to image
     VkCommandBuffer cmdbuf = begin_one_time_command_buffer(
-            self->graphics_command_pool);
+            render.graphics_command_pool);
     VkBufferImageCopy region = {
         .bufferOffset = 0,
         .bufferRowLength = 0,
@@ -1636,15 +1634,15 @@ static void load_texture(Render* self, void* buffer, size_t len,
     };
     vkCmdCopyBufferToImage(cmdbuf, texture_staging.buffer, texture->image,
             VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &region);
-    submit_one_time_command_buffer(self->graphics_queue, cmdbuf,
-            self->graphics_command_pool);
+    submit_one_time_command_buffer(render.graphics_queue, cmdbuf,
+            render.graphics_command_pool);
 
     destroy_buffer(&texture_staging);
     }
     {
     // Transition image layout for shader access
     VkCommandBuffer cmdbuf = begin_one_time_command_buffer(
-            self->graphics_command_pool);
+            render.graphics_command_pool);
     VkImageMemoryBarrier barrier = {
         .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
         .oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
@@ -1664,8 +1662,8 @@ static void load_texture(Render* self, void* buffer, size_t len,
             VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, 0, 0, NULL, 0, NULL, 1,
             &barrier);
     submit_one_time_command_buffer(
-            self->graphics_queue, cmdbuf,
-            self->graphics_command_pool);
+            render.graphics_queue, cmdbuf,
+            render.graphics_command_pool);
     }
 
     create_2d_image_view(texture->image, VK_FORMAT_R8G8B8A8_SRGB,
@@ -1673,9 +1671,9 @@ static void load_texture(Render* self, void* buffer, size_t len,
 
     VkDescriptorSetAllocateInfo tex_set_alloc_info = {
         .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO,
-        .descriptorPool = self->texture_descriptor_pool,
+        .descriptorPool = render.texture_descriptor_pool,
         .descriptorSetCount = 1,
-        .pSetLayouts = &self->texture_set_layout,
+        .pSetLayouts = &render.texture_set_layout,
     };
     if (vkAllocateDescriptorSets(
             g_device, &tex_set_alloc_info, &texture->desc_set) != VK_SUCCESS) {
@@ -1685,7 +1683,7 @@ static void load_texture(Render* self, void* buffer, size_t len,
     VkDescriptorImageInfo texture_info = {
         .imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
         .imageView = texture->view,
-        .sampler = self->texture_sampler,
+        .sampler = render.texture_sampler,
     };
     VkWriteDescriptorSet texture_write = {
         .sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
@@ -1699,7 +1697,7 @@ static void load_texture(Render* self, void* buffer, size_t len,
     vkUpdateDescriptorSets(g_device, 1, &texture_write, 0, NULL);
 }
 
-void load_scene(Render* self)
+void load_scene()
 {
     // LOAD GLTF
     cgltf_options gltf_options = {0};
@@ -1727,7 +1725,7 @@ void load_scene(Render* self)
         void* image_data = image_buffer->data + image_buffer_view->offset;
         size_t image_size = image_buffer_view->size;
 
-        load_texture(self, image_data, image_size, &scene.textures[i]);
+        load_texture(image_data, image_size, &scene.textures[i]);
     }
 
     scene.meshes = malloc_nofail(sizeof(Mesh) * gltf_data->meshes_count);
@@ -1890,16 +1888,16 @@ void load_scene(Render* self)
             (void*) vertices,
             sizeof(Vertex) * vertex_count,
             VK_BUFFER_USAGE_VERTEX_BUFFER_BIT,
-            self->graphics_queue,
-            self->graphics_command_pool,
+            render.graphics_queue,
+            render.graphics_command_pool,
             &scene.vertex_buffer
     );
     device_local_buffer_from_data(
             (void*) indices,
             sizeof(uint16_t) * index_count,
             VK_BUFFER_USAGE_INDEX_BUFFER_BIT,
-            self->graphics_queue,
-            self->graphics_command_pool,
+            render.graphics_queue,
+            render.graphics_command_pool,
             &scene.index_buffer
     );
     mem_free(vertices);
@@ -1931,8 +1929,8 @@ void load_scene(Render* self)
             (void*) lights,
             sizeof(Light) * LIGHT_COUNT,
             &scene.lights_buffer,
-            self->graphics_queue,
-            self->graphics_command_pool
+            render.graphics_queue,
+            render.graphics_command_pool
     );
 
     // Deferred lights SBO
@@ -1944,7 +1942,7 @@ void load_scene(Render* self)
 
     VkWriteDescriptorSet lights_sbo_write = {
         .sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
-        .dstSet = self->desc_set,
+        .dstSet = render.desc_set,
         .dstBinding = 2,
         .dstArrayElement = 0,
         .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
@@ -1956,69 +1954,67 @@ void load_scene(Render* self)
     cgltf_free(gltf_data);
 }
 
-static void cleanup_swapchain(Render* self)
+static void cleanup_swapchain()
 {
-    vkDestroyDescriptorPool(g_device, self->descriptor_pool, NULL);
-    vkDestroyDescriptorPool(g_device, self->gbuf_descriptor_pool, NULL);
+    vkDestroyDescriptorPool(g_device, render.descriptor_pool, NULL);
+    vkDestroyDescriptorPool(g_device, render.gbuf_descriptor_pool, NULL);
 
     vkDestroySemaphore(
-            g_device, self->image_available_semaphore, NULL);
+            g_device, render.image_available_semaphore, NULL);
     vkDestroySemaphore(
-            g_device, self->draw_finished_semaphore, NULL);
-    vkDestroyFence(g_device, self->commands_executed_fence, NULL);
+            g_device, render.draw_finished_semaphore, NULL);
+    vkDestroyFence(g_device, render.commands_executed_fence, NULL);
 
     for (size_t i=0; i < FRAMES_IN_FLIGHT; i++) {
-        vkDestroyFramebuffer(g_device, self->framebuffers[i], NULL);
+        vkDestroyFramebuffer(g_device, render.framebuffers[i], NULL);
     }
-    vkDestroyFramebuffer(g_device, self->offscreen_framebuffer, NULL);
+    vkDestroyFramebuffer(g_device, render.offscreen_framebuffer, NULL);
     
-    destroy_attachment(&self->offscreen_position);
-    destroy_attachment(&self->offscreen_normal);
-    destroy_attachment(&self->offscreen_albedo);
-    destroy_attachment(&self->offscreen_depth);
+    destroy_attachment(&render.offscreen_position);
+    destroy_attachment(&render.offscreen_normal);
+    destroy_attachment(&render.offscreen_albedo);
+    destroy_attachment(&render.offscreen_depth);
 
-    vkDestroyPipeline(g_device, self->graphics_pipeline, NULL);
-    vkDestroyPipeline(g_device, self->offscreen_graphics_pipeline, NULL);
-    vkDestroyPipelineLayout(g_device, self->graphics_pipeline_layout, NULL);
+    vkDestroyPipeline(g_device, render.graphics_pipeline, NULL);
+    vkDestroyPipeline(g_device, render.offscreen_graphics_pipeline, NULL);
+    vkDestroyPipelineLayout(g_device, render.graphics_pipeline_layout, NULL);
 
-    vkDestroyRenderPass(g_device, self->render_pass, NULL);
-    vkDestroyRenderPass(g_device, self->offscreen_render_pass, NULL);
+    vkDestroyRenderPass(g_device, render.render_pass, NULL);
+    vkDestroyRenderPass(g_device, render.offscreen_render_pass, NULL);
 
     for (uint32_t i=0; i < FRAMES_IN_FLIGHT; i++) {
-        vkDestroyImageView(g_device, self->swapchain_image_views[i], NULL);
+        vkDestroyImageView(g_device, render.swapchain_image_views[i], NULL);
     }
 
-    vkDestroySwapchainKHR(g_device, self->swapchain, NULL);
+    vkDestroySwapchainKHR(g_device, render.swapchain, NULL);
 }
 
-void render_destroy(Render* self)
+void render_destroy()
 {
     vkDeviceWaitIdle(g_device);
 
-    cleanup_swapchain(self);
+    cleanup_swapchain();
     destroy_scene(&scene);
 
-    destroy_buffer(&self->ubo_buffer);
-    destroy_buffer(&self->deferred_ubo_buffer);
+    destroy_buffer(&render.ubo_buffer);
+    destroy_buffer(&render.deferred_ubo_buffer);
 
-    vkDestroySampler(g_device, self->texture_sampler, NULL);
-    vkDestroySampler(g_device, self->gbuf_sampler, NULL);
+    vkDestroySampler(g_device, render.texture_sampler, NULL);
+    vkDestroySampler(g_device, render.gbuf_sampler, NULL);
 
-    vkDestroyDescriptorPool(g_device, self->texture_descriptor_pool, NULL);
+    vkDestroyDescriptorPool(g_device, render.texture_descriptor_pool, NULL);
 
-    vkDestroyDescriptorSetLayout(g_device, self->desc_set_layout, NULL);
-    vkDestroyDescriptorSetLayout(g_device, self->gbuf_desc_set_layout, NULL);
-    vkDestroyDescriptorSetLayout(g_device, self->texture_set_layout, NULL);
+    vkDestroyDescriptorSetLayout(g_device, render.desc_set_layout, NULL);
+    vkDestroyDescriptorSetLayout(g_device, render.gbuf_desc_set_layout, NULL);
+    vkDestroyDescriptorSetLayout(g_device, render.texture_set_layout, NULL);
 
-    vkDestroyCommandPool(g_device, self->graphics_command_pool, NULL);
+    vkDestroyCommandPool(g_device, render.graphics_command_pool, NULL);
     vkDestroyDevice(g_device, NULL);
-    vkDestroySurfaceKHR(self->instance, self->surface, NULL);
-    vkDestroyInstance(self->instance, NULL);
+    vkDestroySurfaceKHR(render.instance, render.surface, NULL);
+    vkDestroyInstance(render.instance, NULL);
 
     glfwDestroyWindow(g_window);
     glfwTerminate();
-
-    mem_free(self);
 }
 
 static void create_2d_image(uint32_t width, uint32_t height,
@@ -2307,7 +2303,7 @@ static void device_local_buffer_from_data(
             command_pool);
 }
 
-static void recreate_swapchain(Render* self)
+static void recreate_swapchain()
 {
     int width = 0, height = 0;
     while (width == 0 || height == 0)
@@ -2318,7 +2314,6 @@ static void recreate_swapchain(Render* self)
 
     vkDeviceWaitIdle(g_device);
 
-    cleanup_swapchain(self);
-
-    render_swapchain_dependent_init(self);
+    cleanup_swapchain();
+    render_swapchain_dependent_init();
 }
