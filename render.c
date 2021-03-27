@@ -240,6 +240,8 @@ typedef struct Render {
     Attachment offscreen_albedo;
     Attachment offscreen_depth;
 
+    Attachment object_code;
+
     VkFramebuffer framebuffers[FRAMES_IN_FLIGHT];
     VkFramebuffer lights_ui_framebuffers[FRAMES_IN_FLIGHT];
     VkFramebuffer offscreen_framebuffer;
@@ -1201,6 +1203,11 @@ static void render_swapchain_dependent_init()
         .layers = 1,
     };
 
+    if (vkCreateFramebuffer(g_device, &offscreen_framebuffer_info, NULL,
+            &render.offscreen_framebuffer) != VK_SUCCESS) {
+        fatal("Failed to create framebuffer.");
+    }
+
     // Light indicators pass
     {
         struct VkAttachmentDescription color_attachment = {
@@ -1224,27 +1231,46 @@ static void render_swapchain_dependent_init()
             .finalLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL,
         };
 
-        struct VkAttachmentDescription attachments[2] = {
-            color_attachment, depth_attachment
+        struct VkAttachmentDescription object_code_attachment = {
+            .format = render.swapchain_format,
+            .samples = VK_SAMPLE_COUNT_1_BIT,
+            .loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR,
+            .storeOp = VK_ATTACHMENT_STORE_OP_STORE,
+            .stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE,
+            .stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE,
+            .initialLayout = VK_IMAGE_LAYOUT_UNDEFINED,
+            .finalLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
         };
+
+        struct VkAttachmentDescription attachments[] = {
+            color_attachment, object_code_attachment, depth_attachment,
+        };
+
         struct VkAttachmentReference color_attachment_ref = {
             .attachment = 0,
             .layout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
         };
+        struct VkAttachmentReference object_code_attachment_ref = {
+            .attachment = 1,
+            .layout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+        };
+        VkAttachmentReference color_refs[2] = {
+            color_attachment_ref, object_code_attachment_ref,
+        };
 
         VkAttachmentReference depth_ref = {
-            1, VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL};
+            2, VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL};
 
         VkSubpassDescription subpass = {
             .pipelineBindPoint = VK_PIPELINE_BIND_POINT_GRAPHICS,
-            .colorAttachmentCount = 1,
-            .pColorAttachments = &color_attachment_ref,
+            .colorAttachmentCount = 2,
+            .pColorAttachments = color_refs,
             .pDepthStencilAttachment = &depth_ref,
         };
 
         VkRenderPassCreateInfo render_pass_info = {
             .sType = VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO,
-            .attachmentCount = 2,
+            .attachmentCount = 3,
             .pAttachments = attachments,
             .subpassCount = 1,
             .pSubpasses = &subpass,
@@ -1256,15 +1282,20 @@ static void render_swapchain_dependent_init()
                g_device, &render_pass_info, NULL, &render.lights_ui_render_pass) !=
                VK_SUCCESS) fatal("Failed to create render pass.");
 
+        create_attachment(&render.object_code, render.swapchain_extent.width,
+                render.swapchain_extent.height, render.swapchain_format,
+                VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT);
+
         for (int i=0; i < FRAMES_IN_FLIGHT; i++) {
-            VkImageView attachments[2] = {
+            VkImageView attachments[3] = {
                 render.swapchain_image_views[i],
+                render.object_code.view,
                 render.offscreen_depth.view,
             };
             VkFramebufferCreateInfo framebuffer_info = {
                 .sType = VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO,
                 .renderPass = render.lights_ui_render_pass,
-                .attachmentCount = 2,
+                .attachmentCount = 3,
                 .pAttachments = attachments,
                 .width = render.swapchain_extent.width,
                 .height = render.swapchain_extent.height,
@@ -1276,11 +1307,6 @@ static void render_swapchain_dependent_init()
                 fatal("Failed to create framebuffer.");
             }
         }
-    }
-
-    if (vkCreateFramebuffer(g_device, &offscreen_framebuffer_info, NULL,
-            &render.offscreen_framebuffer) != VK_SUCCESS) {
-        fatal("Failed to create framebuffer.");
     }
 
     // CREATE GRAPHICS PIPELINES (offscreen and final)
@@ -1488,7 +1514,6 @@ static void render_swapchain_dependent_init()
     };
 
     VkVertexInputAttributeDescription lights_ui_attr_descs[2];
-
     lights_ui_attr_descs[0].binding = 0;
     lights_ui_attr_descs[0].location = 0;
     lights_ui_attr_descs[0].format = VK_FORMAT_R32G32B32_SFLOAT; 
@@ -1507,11 +1532,14 @@ static void render_swapchain_dependent_init()
         .pVertexAttributeDescriptions = lights_ui_attr_descs,
     };
 
+    VkPipelineColorBlendAttachmentState lights_ui_blend_states[2] = {
+        color_blend_attachment, color_blend_attachment 
+    };
     VkPipelineColorBlendStateCreateInfo lights_ui_color_blending = {
         .sType = VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO,
         .logicOpEnable = VK_FALSE,
-        .attachmentCount = 1,
-        .pAttachments = &color_blend_attachment,
+        .attachmentCount = 2,
+        .pAttachments = lights_ui_blend_states,
     };
 
     VkGraphicsPipelineCreateInfo lights_ui_pipeline_info = {
@@ -1695,6 +1723,12 @@ void render_draw_frame(vec3 cam_pos, vec3 cam_dir, vec3 cam_up) {
 
     render_pass_info.renderPass = render.lights_ui_render_pass;
     render_pass_info.framebuffer = render.lights_ui_framebuffers[current_frame];
+    render_pass_info.clearValueCount = 2;
+    VkClearValue lights_ui_clear_values[2] = {
+        { .color = {0.0f, 0.0f, 0.0f, 0.0f} },
+        { .color = {0.0f, 0.0f, 0.0f, 0.0f} },
+    };
+    render_pass_info.pClearValues = lights_ui_clear_values;
     vkCmdBeginRenderPass(render.command_buffer, &render_pass_info,
             VK_SUBPASS_CONTENTS_INLINE);
     vkCmdBindVertexBuffers(render.command_buffer, 0, 1,
@@ -2165,6 +2199,7 @@ static void cleanup_swapchain()
     destroy_attachment(&render.offscreen_normal);
     destroy_attachment(&render.offscreen_albedo);
     destroy_attachment(&render.offscreen_depth);
+    destroy_attachment(&render.object_code);
 
     vkDestroyPipeline(g_device, render.graphics_pipeline, NULL);
     vkDestroyPipeline(g_device, render.offscreen_graphics_pipeline, NULL);
