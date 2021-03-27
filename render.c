@@ -95,6 +95,8 @@ typedef struct Scene {
     size_t node_count;
     Texture* textures;
     size_t texture_count;
+    Light* lights;
+    size_t light_count;
 
     Buffer vertex_buffer;
     Buffer index_buffer;
@@ -113,9 +115,9 @@ void destroy_scene(Scene* scene)
         destroy_texture(&scene->textures[i]);
     } 
     mem_free(scene->textures);
+    mem_free(scene->lights);
 
     destroy_buffer(&scene->lights_buffer);
-
     destroy_buffer(&scene->index_buffer);
     destroy_buffer(&scene->vertex_buffer);
 }
@@ -1904,13 +1906,6 @@ void load_scene(Render* self)
     mem_free(indices);
 
     // Load lights
-    create_buffer(
-            sizeof(Light) * LIGHT_COUNT,
-            VK_BUFFER_USAGE_STORAGE_BUFFER_BIT |
-                    VK_BUFFER_USAGE_TRANSFER_DST_BIT,
-            VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
-            &scene.lights_buffer
-    );
     Light light1 = {
         .pos = { 3.0, 6.0, 12.0 },
         .color = { 0.0, 0.0, 1.0 },
@@ -1921,6 +1916,17 @@ void load_scene(Render* self)
     };
     Light lights[2] = {light1, light2};
 
+    scene.light_count = LIGHT_COUNT;
+    scene.lights = mem_alloc(sizeof(Light) * scene.light_count);
+    memcpy(scene.lights, lights, sizeof(Light) * scene.light_count);
+
+    create_buffer(
+            sizeof(Light) * LIGHT_COUNT,
+            VK_BUFFER_USAGE_STORAGE_BUFFER_BIT |
+                    VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+            VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
+            &scene.lights_buffer
+    );
     upload_to_device_local_buffer(
             (void*) lights,
             sizeof(Light) * LIGHT_COUNT,
