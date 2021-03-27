@@ -241,6 +241,7 @@ typedef struct Render {
     Attachment offscreen_depth;
 
     VkFramebuffer framebuffers[FRAMES_IN_FLIGHT];
+    VkFramebuffer lights_ui_framebuffers[FRAMES_IN_FLIGHT];
     VkFramebuffer offscreen_framebuffer;
 
     VkDescriptorPool descriptor_pool;
@@ -1105,7 +1106,7 @@ static void render_swapchain_dependent_init()
         .format = depth_format,
         .samples = VK_SAMPLE_COUNT_1_BIT,
         .loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR,
-        .storeOp = VK_ATTACHMENT_STORE_OP_DONT_CARE,
+        .storeOp = VK_ATTACHMENT_STORE_OP_STORE,
         .stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE,
         .stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE,
         .initialLayout = VK_IMAGE_LAYOUT_UNDEFINED,
@@ -1158,72 +1159,6 @@ static void render_swapchain_dependent_init()
             render.swapchain_extent.height, normal_attachment.format,
             VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT);
 
-    // Light indicators pass
-    {
-        struct VkAttachmentDescription color_attachment = {
-            .format = render.swapchain_format,
-            .samples = VK_SAMPLE_COUNT_1_BIT,
-            .loadOp = VK_ATTACHMENT_LOAD_OP_LOAD,
-            .storeOp = VK_ATTACHMENT_STORE_OP_STORE,
-            .stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE,
-            .stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE,
-            .initialLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
-            .finalLayout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR,
-        };
-
-        enum {attachment_count = 1};
-        struct VkAttachmentDescription attachments[attachment_count] = {
-            color_attachment,
-        };
-        struct VkAttachmentReference color_attachment_ref = {
-            .attachment = 0,
-            .layout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
-        };
-
-        VkSubpassDescription subpass = {
-            .pipelineBindPoint = VK_PIPELINE_BIND_POINT_GRAPHICS,
-            .colorAttachmentCount = 1,
-            .pColorAttachments = &color_attachment_ref,
-            .pDepthStencilAttachment = NULL,
-        };
-
-        VkRenderPassCreateInfo render_pass_info = {
-            .sType = VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO,
-            .attachmentCount = attachment_count,
-            .pAttachments = attachments,
-            .subpassCount = 1,
-            .pSubpasses = &subpass,
-            .dependencyCount = 2,
-            .pDependencies = dependencies,
-        };
-
-        if (vkCreateRenderPass(
-               g_device, &render_pass_info, NULL, &render.lights_ui_render_pass) !=
-               VK_SUCCESS) fatal("Failed to create render pass.");
-
-        /*
-        for (int i=0; i < FRAMES_IN_FLIGHT; i++) {
-            VkImageView attachments[1] = {
-                render.swapchain_image_views[i],
-            };
-            VkFramebufferCreateInfo framebuffer_info = {
-                .sType = VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO,
-                .renderPass = render.render_pass,
-                .attachmentCount = attachment_count,
-                .pAttachments = attachments,
-                .width = render.swapchain_extent.width,
-                .height = render.swapchain_extent.height,
-                .layers = 1,
-            };
-
-            if (vkCreateFramebuffer(g_device, &framebuffer_info, NULL,
-                    &render.framebuffers[i]) != VK_SUCCESS) {
-                fatal("Failed to create framebuffer.");
-            }
-        }
-        */
-    }
-
     // Write G-buffer descriptors
     VkDescriptorImageInfo gbuf_desc_info = {
         .imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
@@ -1265,6 +1200,83 @@ static void render_swapchain_dependent_init()
         .height = render.swapchain_extent.height,
         .layers = 1,
     };
+
+    // Light indicators pass
+    {
+        struct VkAttachmentDescription color_attachment = {
+            .format = render.swapchain_format,
+            .samples = VK_SAMPLE_COUNT_1_BIT,
+            .loadOp = VK_ATTACHMENT_LOAD_OP_LOAD,
+            .storeOp = VK_ATTACHMENT_STORE_OP_STORE,
+            .stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE,
+            .stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE,
+            .initialLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+            .finalLayout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR,
+        };
+        struct VkAttachmentDescription depth_attachment = {
+            .format = depth_format,
+            .samples = VK_SAMPLE_COUNT_1_BIT,
+            .loadOp = VK_ATTACHMENT_LOAD_OP_LOAD,
+            .storeOp = VK_ATTACHMENT_STORE_OP_DONT_CARE,
+            .stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE,
+            .stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE,
+            .initialLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL,
+            .finalLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL,
+        };
+
+        struct VkAttachmentDescription attachments[2] = {
+            color_attachment, depth_attachment
+        };
+        struct VkAttachmentReference color_attachment_ref = {
+            .attachment = 0,
+            .layout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+        };
+
+        VkAttachmentReference depth_ref = {
+            1, VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL};
+
+        VkSubpassDescription subpass = {
+            .pipelineBindPoint = VK_PIPELINE_BIND_POINT_GRAPHICS,
+            .colorAttachmentCount = 1,
+            .pColorAttachments = &color_attachment_ref,
+            .pDepthStencilAttachment = &depth_ref,
+        };
+
+        VkRenderPassCreateInfo render_pass_info = {
+            .sType = VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO,
+            .attachmentCount = 2,
+            .pAttachments = attachments,
+            .subpassCount = 1,
+            .pSubpasses = &subpass,
+            .dependencyCount = 2,
+            .pDependencies = dependencies,
+        };
+
+        if (vkCreateRenderPass(
+               g_device, &render_pass_info, NULL, &render.lights_ui_render_pass) !=
+               VK_SUCCESS) fatal("Failed to create render pass.");
+
+        for (int i=0; i < FRAMES_IN_FLIGHT; i++) {
+            VkImageView attachments[2] = {
+                render.swapchain_image_views[i],
+                render.offscreen_depth.view,
+            };
+            VkFramebufferCreateInfo framebuffer_info = {
+                .sType = VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO,
+                .renderPass = render.lights_ui_render_pass,
+                .attachmentCount = 2,
+                .pAttachments = attachments,
+                .width = render.swapchain_extent.width,
+                .height = render.swapchain_extent.height,
+                .layers = 1,
+            };
+
+            if (vkCreateFramebuffer(g_device, &framebuffer_info, NULL,
+                    &render.lights_ui_framebuffers[i]) != VK_SUCCESS) {
+                fatal("Failed to create framebuffer.");
+            }
+        }
+    }
 
     if (vkCreateFramebuffer(g_device, &offscreen_framebuffer_info, NULL,
             &render.offscreen_framebuffer) != VK_SUCCESS) {
@@ -1682,6 +1694,7 @@ void render_draw_frame(vec3 cam_pos, vec3 cam_dir, vec3 cam_up) {
     vkCmdEndRenderPass(render.command_buffer);
 
     render_pass_info.renderPass = render.lights_ui_render_pass;
+    render_pass_info.framebuffer = render.lights_ui_framebuffers[current_frame];
     vkCmdBeginRenderPass(render.command_buffer, &render_pass_info,
             VK_SUBPASS_CONTENTS_INLINE);
     vkCmdBindVertexBuffers(render.command_buffer, 0, 1,
@@ -2144,6 +2157,7 @@ static void cleanup_swapchain()
 
     for (size_t i=0; i < FRAMES_IN_FLIGHT; i++) {
         vkDestroyFramebuffer(g_device, render.framebuffers[i], NULL);
+        vkDestroyFramebuffer(g_device, render.lights_ui_framebuffers[i], NULL);
     }
     vkDestroyFramebuffer(g_device, render.offscreen_framebuffer, NULL);
     
