@@ -509,48 +509,8 @@ void create_command_pool()
     }
 }
 
-void create_texture_sampler()
+static void setup_main_desc_set()
 {
-    VkSamplerCreateInfo texture_sampler_info = {
-        .sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO,
-        .magFilter = VK_FILTER_LINEAR,
-        .minFilter = VK_FILTER_LINEAR,
-        .addressModeU = VK_SAMPLER_ADDRESS_MODE_REPEAT,
-        .addressModeV = VK_SAMPLER_ADDRESS_MODE_REPEAT,
-        .addressModeW = VK_SAMPLER_ADDRESS_MODE_REPEAT,
-        .anisotropyEnable = VK_TRUE,
-        .maxAnisotropy = 16.0f,
-        .borderColor = VK_BORDER_COLOR_INT_OPAQUE_BLACK,
-        .unnormalizedCoordinates = VK_FALSE,
-        .compareEnable = VK_FALSE,
-        .compareOp = VK_COMPARE_OP_ALWAYS,
-        .mipmapMode = VK_SAMPLER_MIPMAP_MODE_LINEAR,
-        .minLod = 0.0f,
-        .maxLod = 1.0,
-        .mipLodBias = 0.0f,
-    };
-
-    if (vkCreateSampler(g_device, &texture_sampler_info, NULL,
-                &render.texture_sampler) != VK_SUCCESS) {
-        fatal("Failed to create texture sampler.");
-    }
-}
-
-void render_init() {
-    create_window();
-    create_instance();
-
-    if (glfwCreateWindowSurface(
-            render.instance, g_window, NULL, &render.surface) != VK_SUCCESS) {
-        fatal("Failed to create surface.");
-    }
-
-    pick_physical_device();
-    create_logical_device();
-    create_command_pool();
-    create_texture_sampler();
-
-    // CREATE DESCRIPTOR SET LAYOUTS AND PIPELINE LAYOUT
     VkDescriptorSetLayoutBinding mrt_ubo_binding = {
         .binding = 0,
         .descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
@@ -582,11 +542,6 @@ void render_init() {
         fatal("Failed to create descriptor set layout.");
     }
 
-    // CREATE DESCRIPTOR POOLS
-
-    // UBO descriptor pool
-    // MRT vertex shader UBO
-    // Deferred fragment shader UBO
     VkDescriptorPoolSize ub_pool_size = {
         .type = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
         .descriptorCount = 2,
@@ -610,6 +565,74 @@ void render_init() {
         fatal("Failed to create descriptor pool.");
     }
 
+    VkDescriptorSetAllocateInfo desc_set_alloc_info = {
+        .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO,
+        .descriptorPool = render.descriptor_pool,
+        .descriptorSetCount = 1,
+        .pSetLayouts = &render.desc_set_layout,
+    };
+    if (vkAllocateDescriptorSets(
+            g_device, &desc_set_alloc_info, &render.desc_set
+            ) != VK_SUCCESS) {
+        fatal("Failed to allocate descriptor sets.");
+    }
+
+    // MRT UBO
+    // TODO Change MRT UBO to host coherent
+    create_buffer(
+            sizeof(MrtUbo),
+            VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT |
+                    VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+            VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
+            &render.ubo_buffer
+    );
+
+    VkDescriptorBufferInfo buffer_info = {
+        .buffer = render.ubo_buffer.buffer,
+        .offset = 0,
+        .range = sizeof(MrtUbo),
+    };
+
+    VkWriteDescriptorSet uniform_write = {
+        .sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+        .dstSet = render.desc_set,
+        .dstBinding = 0,
+        .dstArrayElement = 0,
+        .descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
+        .descriptorCount = 1,
+        .pBufferInfo = &buffer_info,
+    };
+    vkUpdateDescriptorSets(g_device, 1, &uniform_write, 0, NULL);
+
+    // Deferred UBO
+    create_buffer(
+            sizeof(DeferredUbo),
+            VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT |
+                    VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+            VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
+            &render.deferred_ubo_buffer
+    );
+
+    VkDescriptorBufferInfo deferred_buffer_info = {
+        .buffer = render.deferred_ubo_buffer.buffer,
+        .offset = 0,
+        .range = sizeof(DeferredUbo),
+    };
+
+    VkWriteDescriptorSet deferred_uniform_write = {
+        .sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+        .dstSet = render.desc_set,
+        .dstBinding = 1,
+        .dstArrayElement = 0,
+        .descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
+        .descriptorCount = 1,
+        .pBufferInfo = &deferred_buffer_info,
+    };
+    vkUpdateDescriptorSets(g_device, 1, &deferred_uniform_write, 0, NULL);
+}
+
+static void setup_gbuffer_desc_set()
+{
     // G-buffer descriptor pool
     VkDescriptorPoolSize gbuf_desc_pool_size = {
         .type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
@@ -627,36 +650,32 @@ void render_init() {
         fatal("Failed to create descriptor pool.");
     }
 
-    // Texture descriptor pool
-    VkDescriptorPoolSize texture_pool_size = {
-        .type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
-        .descriptorCount = MAX_TEXTURES,
+    // Create G-buffer sampler
+    VkSamplerCreateInfo gbuf_sampler_info = {
+        .sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO,
+        .magFilter = VK_FILTER_NEAREST,
+        .minFilter = VK_FILTER_NEAREST,
+        .addressModeU = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE,
+        .addressModeV = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE,
+        .addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE,
+        .anisotropyEnable = VK_TRUE,
+        .maxAnisotropy = 1.0f,
+        .borderColor = VK_BORDER_COLOR_FLOAT_OPAQUE_WHITE,
+        .unnormalizedCoordinates = VK_FALSE,
+        .compareEnable = VK_FALSE,
+        .compareOp = VK_COMPARE_OP_ALWAYS,
+        .mipmapMode = VK_SAMPLER_MIPMAP_MODE_LINEAR,
+        .minLod = 0.0f,
+        .maxLod = 1.0,
+        .mipLodBias = 0.0f,
     };
-    VkDescriptorPoolCreateInfo texture_pool_info = {
-        .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO,
-        .poolSizeCount = 1,
-        .pPoolSizes = &texture_pool_size,
-        .maxSets = MAX_TEXTURES,
-    };
-    if (vkCreateDescriptorPool(
-            g_device, &texture_pool_info, NULL, &render.texture_descriptor_pool)
-            != VK_SUCCESS) {
-        fatal("Failed to create texture descriptor pool.");
+
+    if (vkCreateSampler(g_device, &gbuf_sampler_info, NULL,
+                &render.gbuf_sampler) != VK_SUCCESS) {
+        fatal("Failed to create G-buffer sampler.");
     }
 
-    // Allocate UBO descriptor set
-    VkDescriptorSetAllocateInfo desc_set_alloc_info = {
-        .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO,
-        .descriptorPool = render.descriptor_pool,
-        .descriptorSetCount = 1,
-        .pSetLayouts = &render.desc_set_layout,
-    };
-    if (vkAllocateDescriptorSets(
-            g_device, &desc_set_alloc_info, &render.desc_set
-            ) != VK_SUCCESS) {
-        fatal("Failed to allocate descriptor sets.");
-    }
-
+    // Descriptor set layout
     VkDescriptorSetLayoutBinding position_gbuf_binding = {
         .binding = 0,
         .descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
@@ -688,31 +707,6 @@ void render_init() {
         fatal("Failed to create descriptor set layout.");
     }
 
-    // Create G-buffer sampler
-    VkSamplerCreateInfo gbuf_sampler_info = {
-        .sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO,
-        .magFilter = VK_FILTER_NEAREST,
-        .minFilter = VK_FILTER_NEAREST,
-        .addressModeU = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE,
-        .addressModeV = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE,
-        .addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE,
-        .anisotropyEnable = VK_TRUE,
-        .maxAnisotropy = 1.0f,
-        .borderColor = VK_BORDER_COLOR_FLOAT_OPAQUE_WHITE,
-        .unnormalizedCoordinates = VK_FALSE,
-        .compareEnable = VK_FALSE,
-        .compareOp = VK_COMPARE_OP_ALWAYS,
-        .mipmapMode = VK_SAMPLER_MIPMAP_MODE_LINEAR,
-        .minLod = 0.0f,
-        .maxLod = 1.0,
-        .mipLodBias = 0.0f,
-    };
-
-    if (vkCreateSampler(g_device, &gbuf_sampler_info, NULL,
-                &render.gbuf_sampler) != VK_SUCCESS) {
-        fatal("Failed to create G-buffer sampler.");
-    }
-
     // Allocate descriptor set for G-buffer attachments
     VkDescriptorSetAllocateInfo gbuf_desc_set_alloc_info = {
         .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO,
@@ -725,8 +719,49 @@ void render_init() {
             ) != VK_SUCCESS) {
         fatal("Failed to allocate descriptor sets.");
     }
+}
 
-    // Texture sampler descriptor set layout
+static void setup_texture_descriptor()
+{
+    VkSamplerCreateInfo texture_sampler_info = {
+        .sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO,
+        .magFilter = VK_FILTER_LINEAR,
+        .minFilter = VK_FILTER_LINEAR,
+        .addressModeU = VK_SAMPLER_ADDRESS_MODE_REPEAT,
+        .addressModeV = VK_SAMPLER_ADDRESS_MODE_REPEAT,
+        .addressModeW = VK_SAMPLER_ADDRESS_MODE_REPEAT,
+        .anisotropyEnable = VK_TRUE,
+        .maxAnisotropy = 16.0f,
+        .borderColor = VK_BORDER_COLOR_INT_OPAQUE_BLACK,
+        .unnormalizedCoordinates = VK_FALSE,
+        .compareEnable = VK_FALSE,
+        .compareOp = VK_COMPARE_OP_ALWAYS,
+        .mipmapMode = VK_SAMPLER_MIPMAP_MODE_LINEAR,
+        .minLod = 0.0f,
+        .maxLod = 1.0,
+        .mipLodBias = 0.0f,
+    };
+    if (vkCreateSampler(g_device, &texture_sampler_info, NULL,
+                &render.texture_sampler) != VK_SUCCESS) {
+        fatal("Failed to create texture sampler.");
+    }
+
+    VkDescriptorPoolSize texture_pool_size = {
+        .type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+        .descriptorCount = MAX_TEXTURES,
+    };
+    VkDescriptorPoolCreateInfo texture_pool_info = {
+        .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO,
+        .poolSizeCount = 1,
+        .pPoolSizes = &texture_pool_size,
+        .maxSets = MAX_TEXTURES,
+    };
+    if (vkCreateDescriptorPool(
+            g_device, &texture_pool_info, NULL, &render.texture_descriptor_pool)
+            != VK_SUCCESS) {
+        fatal("Failed to create texture descriptor pool.");
+    }
+
     VkDescriptorSetLayoutBinding texture_sampler_binding = {
         .binding = 0,
         .descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
@@ -742,7 +777,10 @@ void render_init() {
             &render.texture_set_layout) != VK_SUCCESS) {
         fatal("Failed to create texture descriptor set layout.");
     }
+}
 
+static void setup_pipeline_layout()
+{
     VkPushConstantRange push_constant_range = {
         .stageFlags = VK_SHADER_STAGE_VERTEX_BIT,
         .offset = 0,
@@ -769,8 +807,10 @@ void render_init() {
                             &render.graphics_pipeline_layout) != VK_SUCCESS) {
         fatal("Failed to create pipeline layout.");
     }
+}
 
-    // CREATE SYNCHRONIZATION PRIMITIVES
+static void setup_sync_primitives()
+{
     VkSemaphoreCreateInfo semaphore_info = {
         .sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO,
     };
@@ -784,64 +824,10 @@ void render_init() {
             &render.draw_finished_semaphore);
     vkCreateFence(g_device, &fence_info, NULL,
             &render.commands_executed_fence);
+}
 
-    // CREATE BUFFERS
-    // TODO Change MRT UBO to host coherent
-    create_buffer(
-            sizeof(MrtUbo),
-            VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT |
-                    VK_BUFFER_USAGE_TRANSFER_DST_BIT,
-            VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
-            &render.ubo_buffer
-    );
-    create_buffer(
-            sizeof(DeferredUbo),
-            VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT |
-                    VK_BUFFER_USAGE_TRANSFER_DST_BIT,
-            VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
-            &render.deferred_ubo_buffer
-    );
-
-    // MRT UBO
-    VkDescriptorBufferInfo buffer_info = {
-        .buffer = render.ubo_buffer.buffer,
-        .offset = 0,
-        .range = sizeof(MrtUbo),
-    };
-
-    VkWriteDescriptorSet uniform_write = {
-        .sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
-        .dstSet = render.desc_set,
-        .dstBinding = 0,
-        .dstArrayElement = 0,
-        .descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
-        .descriptorCount = 1,
-        .pBufferInfo = &buffer_info,
-    };
-    vkUpdateDescriptorSets(g_device, 1, &uniform_write, 0, NULL);
-
-    // Deferred UBO
-    VkDescriptorBufferInfo deferred_buffer_info = {
-        .buffer = render.deferred_ubo_buffer.buffer,
-        .offset = 0,
-        .range = sizeof(DeferredUbo),
-    };
-
-    VkWriteDescriptorSet deferred_uniform_write = {
-        .sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
-        .dstSet = render.desc_set,
-        .dstBinding = 1,
-        .dstArrayElement = 0,
-        .descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
-        .descriptorCount = 1,
-        .pBufferInfo = &deferred_buffer_info,
-    };
-
-    vkUpdateDescriptorSets(g_device, 1, &deferred_uniform_write, 0, NULL);
-
-    render.current_frame = 0;
-
-    // ALLOCATE COMMAND BUFFERS
+static void allocate_command_buffers()
+{
     VkCommandBufferAllocateInfo cmdbuf_allocate_info = {
         .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO,
         .commandPool = render.graphics_command_pool,
@@ -852,7 +838,26 @@ void render_init() {
             &render.command_buffer) != VK_SUCCESS) {
         fatal("Failed to allocate command buffer.");
     }
+}
 
+void render_init() {
+    create_window();
+    create_instance();
+    if (glfwCreateWindowSurface(
+            render.instance, g_window, NULL, &render.surface) != VK_SUCCESS) {
+        fatal("Failed to create surface.");
+    }
+    pick_physical_device();
+    create_logical_device();
+    create_command_pool();
+    allocate_command_buffers();
+    setup_main_desc_set();
+    setup_gbuffer_desc_set();
+    setup_texture_descriptor();
+    setup_pipeline_layout();
+    setup_sync_primitives();
+
+    render.current_frame = 0;
     render_swapchain_dependent_init();
 }
 
@@ -984,11 +989,9 @@ static void create_swapchain()
     }
 }
 
-static void render_swapchain_dependent_init()
+static void setup_final_render_pass()
 {
-    create_swapchain();
-
-    // FINAL COMPOSITION RENDER PASS AND FRAMEBUFFER
+    // Render pass
     struct VkAttachmentDescription color_attachment = {
         .format = render.swapchain_format,
         .samples = VK_SAMPLE_COUNT_1_BIT,
@@ -1054,6 +1057,7 @@ static void render_swapchain_dependent_init()
            g_device, &render_pass_info, NULL, &render.render_pass) !=
            VK_SUCCESS) fatal("Failed to create render pass.");
 
+    // Framebuffer
     for (int i=0; i < FRAMES_IN_FLIGHT; i++) {
         VkImageView attachments[1] = {
             render.swapchain_image_views[i],
@@ -1074,7 +1078,133 @@ static void render_swapchain_dependent_init()
         }
     }
 
-    // OFFSCREEN RENDER PASS AND FRAMEBUFFERS
+    // Pipeline
+    struct VkPipelineInputAssemblyStateCreateInfo input_assembly = {
+        .sType = VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO,
+        .topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST,
+        .primitiveRestartEnable = VK_FALSE,
+    };
+
+    const VkViewport viewport = {
+        .x = 0.0f,
+        .y = 0.0f,
+        .width  = (float) render.swapchain_extent.width,
+        .height = (float) render.swapchain_extent.height,
+        .minDepth = 0.0f,
+        .maxDepth = 1.0f,
+    };
+
+    const VkRect2D scissor = {
+        .offset = {0, 0},
+        .extent = render.swapchain_extent,
+    };
+
+    const VkPipelineViewportStateCreateInfo viewport_state = {
+        .sType = VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO,
+        .viewportCount = 1,
+        .pViewports = &viewport,
+        .scissorCount = 1,
+        .pScissors = &scissor,
+    };
+
+    VkPipelineRasterizationStateCreateInfo rasterizer = {
+        .sType = VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO,
+        .depthClampEnable = VK_FALSE,
+        .rasterizerDiscardEnable = VK_FALSE,
+        .lineWidth = 1.0f,
+        .polygonMode = VK_POLYGON_MODE_FILL,
+        .cullMode = VK_CULL_MODE_FRONT_BIT,
+        .frontFace = VK_FRONT_FACE_COUNTER_CLOCKWISE,
+        .depthBiasEnable = VK_FALSE,
+    };
+
+    const VkPipelineMultisampleStateCreateInfo multisampling = {
+        .sType = VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO,
+        .sampleShadingEnable = VK_FALSE,
+        .rasterizationSamples = VK_SAMPLE_COUNT_1_BIT,
+    };
+
+    const VkPipelineColorBlendAttachmentState color_blend_attachment = {
+        .colorWriteMask = VK_COLOR_COMPONENT_A_BIT |
+                          VK_COLOR_COMPONENT_B_BIT |
+                          VK_COLOR_COMPONENT_G_BIT |
+                          VK_COLOR_COMPONENT_R_BIT,
+        .blendEnable = VK_FALSE,
+    };
+
+    VkPipelineColorBlendStateCreateInfo color_blending = {
+        .sType = VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO,
+        .logicOpEnable = VK_FALSE,
+        .attachmentCount = 1,
+        .pAttachments = &color_blend_attachment,
+    };
+
+    const VkPipelineDepthStencilStateCreateInfo depth_stencil = {
+        .sType = VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO,
+        .depthTestEnable = VK_TRUE,
+        .depthWriteEnable = VK_TRUE,
+        .depthCompareOp = VK_COMPARE_OP_LESS,
+        .depthBoundsTestEnable = VK_FALSE,
+        .stencilTestEnable = VK_FALSE,
+    };
+
+    VkShaderModule deferred_vertex_shader = create_shader_module(
+                    "./shaders/deferred.vert.spv");
+    VkShaderModule deferred_fragment_shader = create_shader_module(
+                "./shaders/deferred.frag.spv");
+
+    struct VkPipelineShaderStageCreateInfo vertex_shader_stage_info = {
+        .sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
+        .stage = VK_SHADER_STAGE_VERTEX_BIT,
+        .module = deferred_vertex_shader,
+        .pName = "main",
+    };
+
+    struct VkPipelineShaderStageCreateInfo fragment_shader_stage_info = {
+        .sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
+        .stage = VK_SHADER_STAGE_FRAGMENT_BIT,
+        .module = deferred_fragment_shader,
+        .pName = "main",
+    };
+
+    struct VkPipelineShaderStageCreateInfo shader_stages[2] = {
+        vertex_shader_stage_info, fragment_shader_stage_info,
+    };
+    VkPipelineVertexInputStateCreateInfo empty_vertex_input = {
+        .sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO,
+    };
+    VkGraphicsPipelineCreateInfo pipeline_info = {
+        .sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO,
+        .stageCount = 2,
+        .pStages = shader_stages,
+        .pVertexInputState = &empty_vertex_input,
+        .pInputAssemblyState = &input_assembly,
+        .pViewportState = &viewport_state,
+        .pRasterizationState = &rasterizer,
+        .pMultisampleState = &multisampling,
+        .pColorBlendState = &color_blending,
+        .pDepthStencilState = &depth_stencil,
+        .layout = render.graphics_pipeline_layout,
+        .renderPass = render.render_pass,
+        .subpass = 0,
+    };
+
+    if (vkCreateGraphicsPipelines(
+                              g_device,
+                              VK_NULL_HANDLE,
+                              1,
+                              &pipeline_info,
+                              NULL,
+                              &render.graphics_pipeline) != VK_SUCCESS) {
+        fatal("Failed to create graphics pipeline.");
+    }
+
+    vkDestroyShaderModule(g_device, deferred_fragment_shader, NULL);
+    vkDestroyShaderModule(g_device, deferred_vertex_shader, NULL);
+}
+
+static void setup_offscreen_render_pass()
+{
     struct VkAttachmentDescription position_attachment = {
         .format = VK_FORMAT_R16G16B16A16_SFLOAT,
         .samples = VK_SAMPLE_COUNT_1_BIT,
@@ -1134,6 +1264,30 @@ static void render_swapchain_dependent_init()
         .colorAttachmentCount = 3,
         .pColorAttachments = offscreen_color_refs,
         .pDepthStencilAttachment = &offscreen_depth_ref,
+    };
+
+    struct VkSubpassDependency dependency_start = {
+        .srcSubpass = VK_SUBPASS_EXTERNAL,
+        .dstSubpass = 0,
+        .srcStageMask = VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT,
+        .dstStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
+        .srcAccessMask = VK_ACCESS_MEMORY_READ_BIT,
+        .dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_READ_BIT |
+                         VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT,
+        .dependencyFlags = VK_DEPENDENCY_BY_REGION_BIT,
+    };
+    struct VkSubpassDependency dependency_end = {
+        .srcSubpass = 0,
+        .dstSubpass = VK_SUBPASS_EXTERNAL,
+        .srcStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
+        .dstStageMask = VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT,
+        .srcAccessMask = VK_ACCESS_COLOR_ATTACHMENT_READ_BIT |
+                         VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT,
+        .dstAccessMask = VK_ACCESS_MEMORY_READ_BIT,
+        .dependencyFlags = VK_DEPENDENCY_BY_REGION_BIT,
+    };
+    VkSubpassDependency dependencies[2] = {
+        dependency_start, dependency_end
     };
 
     VkRenderPassCreateInfo offscreen_render_pass_info = {
@@ -1211,135 +1365,7 @@ static void render_swapchain_dependent_init()
         fatal("Failed to create framebuffer.");
     }
 
-    // Light indicators pass
-    {
-        struct VkAttachmentDescription color_attachment = {
-            .format = render.swapchain_format,
-            .samples = VK_SAMPLE_COUNT_1_BIT,
-            .loadOp = VK_ATTACHMENT_LOAD_OP_LOAD,
-            .storeOp = VK_ATTACHMENT_STORE_OP_STORE,
-            .stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE,
-            .stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE,
-            .initialLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
-            .finalLayout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR,
-        };
-        struct VkAttachmentDescription depth_attachment = {
-            .format = depth_format,
-            .samples = VK_SAMPLE_COUNT_1_BIT,
-            .loadOp = VK_ATTACHMENT_LOAD_OP_LOAD,
-            .storeOp = VK_ATTACHMENT_STORE_OP_DONT_CARE,
-            .stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE,
-            .stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE,
-            .initialLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL,
-            .finalLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL,
-        };
-
-        struct VkAttachmentDescription object_code_attachment = {
-            .format = render.swapchain_format,
-            .samples = VK_SAMPLE_COUNT_1_BIT,
-            .loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR,
-            .storeOp = VK_ATTACHMENT_STORE_OP_STORE,
-            .stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE,
-            .stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE,
-            .initialLayout = VK_IMAGE_LAYOUT_UNDEFINED,
-            .finalLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
-        };
-
-        struct VkAttachmentDescription attachments[] = {
-            color_attachment, object_code_attachment, depth_attachment,
-        };
-
-        struct VkAttachmentReference color_attachment_ref = {
-            .attachment = 0,
-            .layout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
-        };
-        struct VkAttachmentReference object_code_attachment_ref = {
-            .attachment = 1,
-            .layout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
-        };
-        VkAttachmentReference color_refs[2] = {
-            color_attachment_ref, object_code_attachment_ref,
-        };
-
-        VkAttachmentReference depth_ref = {
-            2, VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL};
-
-        VkSubpassDescription subpass = {
-            .pipelineBindPoint = VK_PIPELINE_BIND_POINT_GRAPHICS,
-            .colorAttachmentCount = 2,
-            .pColorAttachments = color_refs,
-            .pDepthStencilAttachment = &depth_ref,
-        };
-
-        VkRenderPassCreateInfo render_pass_info = {
-            .sType = VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO,
-            .attachmentCount = 3,
-            .pAttachments = attachments,
-            .subpassCount = 1,
-            .pSubpasses = &subpass,
-            .dependencyCount = 2,
-            .pDependencies = dependencies,
-        };
-
-        if (vkCreateRenderPass(
-            g_device, &render_pass_info, NULL, &render.lights_ui_render_pass) !=
-            VK_SUCCESS) fatal("Failed to create render pass.");
-
-        create_attachment(&render.object_code, render.swapchain_extent.width,
-                render.swapchain_extent.height, render.swapchain_format,
-                VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT);
-
-        for (int i=0; i < FRAMES_IN_FLIGHT; i++) {
-            VkImageView attachments[3] = {
-                render.swapchain_image_views[i],
-                render.object_code.view,
-                render.offscreen_depth.view,
-            };
-            VkFramebufferCreateInfo framebuffer_info = {
-                .sType = VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO,
-                .renderPass = render.lights_ui_render_pass,
-                .attachmentCount = 3,
-                .pAttachments = attachments,
-                .width = render.swapchain_extent.width,
-                .height = render.swapchain_extent.height,
-                .layers = 1,
-            };
-            if (vkCreateFramebuffer(g_device, &framebuffer_info, NULL,
-                    &render.lights_ui_framebuffers[i]) != VK_SUCCESS) {
-                fatal("Failed to create framebuffer.");
-            }
-        }
-    }
-
-    // CREATE GRAPHICS PIPELINES (offscreen and final)
-    struct VkPipelineInputAssemblyStateCreateInfo input_assembly = {
-        .sType = VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO,
-        .topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST,
-        .primitiveRestartEnable = VK_FALSE,
-    };
-
-    const VkViewport viewport = {
-        .x = 0.0f,
-        .y = 0.0f,
-        .width  = (float) render.swapchain_extent.width,
-        .height = (float) render.swapchain_extent.height,
-        .minDepth = 0.0f,
-        .maxDepth = 1.0f,
-    };
-
-    const VkRect2D scissor = {
-        .offset = {0, 0},
-        .extent = render.swapchain_extent,
-    };
-
-    const VkPipelineViewportStateCreateInfo viewport_state = {
-        .sType = VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO,
-        .viewportCount = 1,
-        .pViewports = &viewport,
-        .scissorCount = 1,
-        .pScissors = &scissor,
-    };
-
+    // G-buffer write pipeline
     VkPipelineRasterizationStateCreateInfo rasterizer = {
         .sType = VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO,
         .depthClampEnable = VK_FALSE,
@@ -1351,99 +1377,23 @@ static void render_swapchain_dependent_init()
         .depthBiasEnable = VK_FALSE,
     };
 
-    const VkPipelineMultisampleStateCreateInfo multisampling = {
-        .sType = VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO,
-        .sampleShadingEnable = VK_FALSE,
-        .rasterizationSamples = VK_SAMPLE_COUNT_1_BIT,
-    };
-
-    const VkPipelineColorBlendAttachmentState color_blend_attachment = {
-        .colorWriteMask = VK_COLOR_COMPONENT_A_BIT |
-                          VK_COLOR_COMPONENT_B_BIT |
-                          VK_COLOR_COMPONENT_G_BIT |
-                          VK_COLOR_COMPONENT_R_BIT,
-        .blendEnable = VK_FALSE,
-    };
-
-    VkPipelineColorBlendStateCreateInfo color_blending = {
-        .sType = VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO,
-        .logicOpEnable = VK_FALSE,
-        .attachmentCount = 1,
-        .pAttachments = &color_blend_attachment,
-    };
-
-    const VkPipelineDepthStencilStateCreateInfo depth_stencil = {
-        .sType = VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO,
-        .depthTestEnable = VK_TRUE,
-        .depthWriteEnable = VK_TRUE,
-        .depthCompareOp = VK_COMPARE_OP_LESS,
-        .depthBoundsTestEnable = VK_FALSE,
-        .stencilTestEnable = VK_FALSE,
-    };
-
-    // Final composition pipeline
-    rasterizer.cullMode = VK_CULL_MODE_FRONT_BIT;
-
-    VkShaderModule deferred_vertex_shader = create_shader_module(
-                    "./shaders/deferred.vert.spv");
-    VkShaderModule deferred_fragment_shader = create_shader_module(
-                "./shaders/deferred.frag.spv");
-
     struct VkPipelineShaderStageCreateInfo vertex_shader_stage_info = {
         .sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
         .stage = VK_SHADER_STAGE_VERTEX_BIT,
-        .module = deferred_vertex_shader,
+        .module = create_shader_module("./shaders/mrt.vert.spv"),
         .pName = "main",
     };
 
     struct VkPipelineShaderStageCreateInfo fragment_shader_stage_info = {
         .sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
         .stage = VK_SHADER_STAGE_FRAGMENT_BIT,
-        .module = deferred_fragment_shader,
+        .module = create_shader_module("./shaders/mrt.frag.spv"),
         .pName = "main",
     };
 
-    enum {shader_stage_count = 2};
-    struct VkPipelineShaderStageCreateInfo shader_stages[shader_stage_count] = {
+    VkPipelineShaderStageCreateInfo shader_stages[2] = {
         vertex_shader_stage_info, fragment_shader_stage_info,
     };
-    VkPipelineVertexInputStateCreateInfo empty_vertex_input = {
-        .sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO,
-    };
-    VkGraphicsPipelineCreateInfo pipeline_info = {
-        .sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO,
-        .stageCount = 2,
-        .pStages = shader_stages,
-        .pVertexInputState = &empty_vertex_input,
-        .pInputAssemblyState = &input_assembly,
-        .pViewportState = &viewport_state,
-        .pRasterizationState = &rasterizer,
-        .pMultisampleState = &multisampling,
-        .pColorBlendState = &color_blending,
-        .pDepthStencilState = &depth_stencil,
-        .layout = render.graphics_pipeline_layout,
-        .renderPass = render.render_pass,
-        .subpass = 0,
-    };
-
-    if (vkCreateGraphicsPipelines(
-                              g_device,
-                              VK_NULL_HANDLE,
-                              1,
-                              &pipeline_info,
-                              NULL,
-                              &render.graphics_pipeline) != VK_SUCCESS) {
-        fatal("Failed to create graphics pipeline.");
-    }
-
-    vkDestroyShaderModule(g_device, deferred_fragment_shader, NULL);
-    vkDestroyShaderModule(g_device, deferred_vertex_shader, NULL);
-
-    // G-buffer write pipeline
-    rasterizer.cullMode = VK_CULL_MODE_BACK_BIT;
-
-    shader_stages[0].module = create_shader_module("./shaders/mrt.vert.spv");
-    shader_stages[1].module = create_shader_module("./shaders/mrt.frag.spv");
 
     VkVertexInputBindingDescription vertex_input_binding_description = {
         .binding = 0,
@@ -1477,14 +1427,82 @@ static void render_swapchain_dependent_init()
         .pVertexAttributeDescriptions = attribute_descriptions,
     };
 
-    pipeline_info.pVertexInputState = &vertex_input_info;
-    pipeline_info.renderPass = render.offscreen_render_pass;
+    struct VkPipelineInputAssemblyStateCreateInfo input_assembly = {
+        .sType = VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO,
+        .topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST,
+        .primitiveRestartEnable = VK_FALSE,
+    };
 
+    const VkViewport viewport = {
+        .x = 0.0f,
+        .y = 0.0f,
+        .width  = (float) render.swapchain_extent.width,
+        .height = (float) render.swapchain_extent.height,
+        .minDepth = 0.0f,
+        .maxDepth = 1.0f,
+    };
+
+    const VkRect2D scissor = {
+        .offset = {0, 0},
+        .extent = render.swapchain_extent,
+    };
+
+    const VkPipelineViewportStateCreateInfo viewport_state = {
+        .sType = VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO,
+        .viewportCount = 1,
+        .pViewports = &viewport,
+        .scissorCount = 1,
+        .pScissors = &scissor,
+    };
+
+    const VkPipelineMultisampleStateCreateInfo multisampling = {
+        .sType = VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO,
+        .sampleShadingEnable = VK_FALSE,
+        .rasterizationSamples = VK_SAMPLE_COUNT_1_BIT,
+    };
+
+    const VkPipelineColorBlendAttachmentState color_blend_attachment = {
+        .colorWriteMask = VK_COLOR_COMPONENT_A_BIT |
+                          VK_COLOR_COMPONENT_B_BIT |
+                          VK_COLOR_COMPONENT_G_BIT |
+                          VK_COLOR_COMPONENT_R_BIT,
+        .blendEnable = VK_FALSE,
+    };
     VkPipelineColorBlendAttachmentState blend_states[3] = {
         color_blend_attachment, color_blend_attachment, color_blend_attachment, 
     };
-    color_blending.attachmentCount = 3;
-    color_blending.pAttachments = blend_states;
+
+    VkPipelineColorBlendStateCreateInfo color_blending = {
+        .sType = VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO,
+        .logicOpEnable = VK_FALSE,
+        .attachmentCount = 3,
+        .pAttachments = blend_states,
+    };
+
+    const VkPipelineDepthStencilStateCreateInfo depth_stencil = {
+        .sType = VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO,
+        .depthTestEnable = VK_TRUE,
+        .depthWriteEnable = VK_TRUE,
+        .depthCompareOp = VK_COMPARE_OP_LESS,
+        .depthBoundsTestEnable = VK_FALSE,
+        .stencilTestEnable = VK_FALSE,
+    };
+
+    VkGraphicsPipelineCreateInfo pipeline_info = {
+        .sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO,
+        .stageCount = 2,
+        .pStages = shader_stages,
+        .pVertexInputState = &vertex_input_info,
+        .pInputAssemblyState = &input_assembly,
+        .pViewportState = &viewport_state,
+        .pRasterizationState = &rasterizer,
+        .pMultisampleState = &multisampling,
+        .pColorBlendState = &color_blending,
+        .pDepthStencilState = &depth_stencil,
+        .layout = render.graphics_pipeline_layout,
+        .renderPass = render.offscreen_render_pass,
+        .subpass = 0,
+    };
 
     if (vkCreateGraphicsPipelines(
                           g_device,
@@ -1498,16 +1516,154 @@ static void render_swapchain_dependent_init()
 
     vkDestroyShaderModule(g_device, shader_stages[0].module, NULL);
     vkDestroyShaderModule(g_device, shader_stages[1].module, NULL);
+}
 
-    // Light indicators pipeline
+static void setup_light_indicators_render_pass()
+{
+    struct VkAttachmentDescription color_attachment = {
+        .format = render.swapchain_format,
+        .samples = VK_SAMPLE_COUNT_1_BIT,
+        .loadOp = VK_ATTACHMENT_LOAD_OP_LOAD,
+        .storeOp = VK_ATTACHMENT_STORE_OP_STORE,
+        .stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE,
+        .stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE,
+        .initialLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+        .finalLayout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR,
+    };
+    struct VkAttachmentDescription depth_attachment = {
+        .format = find_depth_format(),
+        .samples = VK_SAMPLE_COUNT_1_BIT,
+        .loadOp = VK_ATTACHMENT_LOAD_OP_LOAD,
+        .storeOp = VK_ATTACHMENT_STORE_OP_DONT_CARE,
+        .stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE,
+        .stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE,
+        .initialLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL,
+        .finalLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL,
+    };
+
+    struct VkAttachmentDescription object_code_attachment = {
+        .format = render.swapchain_format,
+        .samples = VK_SAMPLE_COUNT_1_BIT,
+        .loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR,
+        .storeOp = VK_ATTACHMENT_STORE_OP_STORE,
+        .stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE,
+        .stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE,
+        .initialLayout = VK_IMAGE_LAYOUT_UNDEFINED,
+        .finalLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+    };
+
+    struct VkAttachmentDescription attachments[] = {
+        color_attachment, object_code_attachment, depth_attachment,
+    };
+
+    struct VkAttachmentReference color_attachment_ref = {
+        .attachment = 0,
+        .layout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+    };
+    struct VkAttachmentReference object_code_attachment_ref = {
+        .attachment = 1,
+        .layout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+    };
+    VkAttachmentReference color_refs[2] = {
+        color_attachment_ref, object_code_attachment_ref,
+    };
+
+    VkAttachmentReference depth_ref = {
+        2, VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL};
+
+    VkSubpassDescription subpass = {
+        .pipelineBindPoint = VK_PIPELINE_BIND_POINT_GRAPHICS,
+        .colorAttachmentCount = 2,
+        .pColorAttachments = color_refs,
+        .pDepthStencilAttachment = &depth_ref,
+    };
+
+    struct VkSubpassDependency dependency_start = {
+        .srcSubpass = VK_SUBPASS_EXTERNAL,
+        .dstSubpass = 0,
+        .srcStageMask = VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT,
+        .dstStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
+        .srcAccessMask = VK_ACCESS_MEMORY_READ_BIT,
+        .dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_READ_BIT |
+                         VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT,
+        .dependencyFlags = VK_DEPENDENCY_BY_REGION_BIT,
+    };
+    struct VkSubpassDependency dependency_end = {
+        .srcSubpass = 0,
+        .dstSubpass = VK_SUBPASS_EXTERNAL,
+        .srcStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
+        .dstStageMask = VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT,
+        .srcAccessMask = VK_ACCESS_COLOR_ATTACHMENT_READ_BIT |
+                         VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT,
+        .dstAccessMask = VK_ACCESS_MEMORY_READ_BIT,
+        .dependencyFlags = VK_DEPENDENCY_BY_REGION_BIT,
+    };
+    VkSubpassDependency dependencies[2] = {
+        dependency_start, dependency_end
+    };
+
+    VkRenderPassCreateInfo render_pass_info = {
+        .sType = VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO,
+        .attachmentCount = 3,
+        .pAttachments = attachments,
+        .subpassCount = 1,
+        .pSubpasses = &subpass,
+        .dependencyCount = 2,
+        .pDependencies = dependencies,
+    };
+
+    if (vkCreateRenderPass(
+        g_device, &render_pass_info, NULL, &render.lights_ui_render_pass) !=
+        VK_SUCCESS) fatal("Failed to create render pass.");
+
+    create_attachment(&render.object_code, render.swapchain_extent.width,
+            render.swapchain_extent.height, render.swapchain_format,
+            VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT);
+
+    for (int i=0; i < FRAMES_IN_FLIGHT; i++) {
+        VkImageView attachments[3] = {
+            render.swapchain_image_views[i],
+            render.object_code.view,
+            render.offscreen_depth.view,
+        };
+        VkFramebufferCreateInfo framebuffer_info = {
+            .sType = VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO,
+            .renderPass = render.lights_ui_render_pass,
+            .attachmentCount = 3,
+            .pAttachments = attachments,
+            .width = render.swapchain_extent.width,
+            .height = render.swapchain_extent.height,
+            .layers = 1,
+        };
+        if (vkCreateFramebuffer(g_device, &framebuffer_info, NULL,
+                &render.lights_ui_framebuffers[i]) != VK_SUCCESS) {
+            fatal("Failed to create framebuffer.");
+        }
+    }
+
     struct VkPipelineInputAssemblyStateCreateInfo point_input_assembly = {
         .sType = VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO,
         .topology = VK_PRIMITIVE_TOPOLOGY_POINT_LIST,
         .primitiveRestartEnable = VK_FALSE,
     };
 
-    shader_stages[0].module = create_shader_module("./shaders/lights_ui.vert.spv");
-    shader_stages[1].module = create_shader_module("./shaders/lights_ui.frag.spv");
+    struct VkPipelineShaderStageCreateInfo vertex_shader_stage_info = {
+        .sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
+        .stage = VK_SHADER_STAGE_VERTEX_BIT,
+        .module = create_shader_module("./shaders/lights_ui.vert.spv"),
+        .pName = "main",
+    };
+
+    struct VkPipelineShaderStageCreateInfo fragment_shader_stage_info = {
+        .sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
+        .stage = VK_SHADER_STAGE_FRAGMENT_BIT,
+        .module = create_shader_module("./shaders/lights_ui.frag.spv"),
+        .pName = "main",
+    };
+
+    VkPipelineShaderStageCreateInfo shader_stages[2] = {
+        vertex_shader_stage_info, fragment_shader_stage_info,
+    };
 
     VkVertexInputBindingDescription lights_ui_input_binding_description = {
         .binding = 0,
@@ -1534,6 +1690,14 @@ static void render_swapchain_dependent_init()
         .pVertexAttributeDescriptions = lights_ui_attr_descs,
     };
 
+    const VkPipelineColorBlendAttachmentState color_blend_attachment = {
+        .colorWriteMask = VK_COLOR_COMPONENT_A_BIT |
+                          VK_COLOR_COMPONENT_B_BIT |
+                          VK_COLOR_COMPONENT_G_BIT |
+                          VK_COLOR_COMPONENT_R_BIT,
+        .blendEnable = VK_FALSE,
+    };
+
     VkPipelineColorBlendAttachmentState lights_ui_blend_states[2] = {
         color_blend_attachment, color_blend_attachment 
     };
@@ -1542,6 +1706,54 @@ static void render_swapchain_dependent_init()
         .logicOpEnable = VK_FALSE,
         .attachmentCount = 2,
         .pAttachments = lights_ui_blend_states,
+    };
+
+    const VkViewport viewport = {
+        .x = 0.0f,
+        .y = 0.0f,
+        .width  = (float) render.swapchain_extent.width,
+        .height = (float) render.swapchain_extent.height,
+        .minDepth = 0.0f,
+        .maxDepth = 1.0f,
+    };
+
+    const VkRect2D scissor = {
+        .offset = {0, 0},
+        .extent = render.swapchain_extent,
+    };
+
+    const VkPipelineViewportStateCreateInfo viewport_state = {
+        .sType = VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO,
+        .viewportCount = 1,
+        .pViewports = &viewport,
+        .scissorCount = 1,
+        .pScissors = &scissor,
+    };
+
+    VkPipelineRasterizationStateCreateInfo rasterizer = {
+        .sType = VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO,
+        .depthClampEnable = VK_FALSE,
+        .rasterizerDiscardEnable = VK_FALSE,
+        .lineWidth = 1.0f,
+        .polygonMode = VK_POLYGON_MODE_FILL,
+        .cullMode = VK_CULL_MODE_FRONT_BIT,
+        .frontFace = VK_FRONT_FACE_COUNTER_CLOCKWISE,
+        .depthBiasEnable = VK_FALSE,
+    };
+
+    const VkPipelineMultisampleStateCreateInfo multisampling = {
+        .sType = VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO,
+        .sampleShadingEnable = VK_FALSE,
+        .rasterizationSamples = VK_SAMPLE_COUNT_1_BIT,
+    };
+
+    const VkPipelineDepthStencilStateCreateInfo depth_stencil = {
+        .sType = VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO,
+        .depthTestEnable = VK_TRUE,
+        .depthWriteEnable = VK_TRUE,
+        .depthCompareOp = VK_COMPARE_OP_LESS,
+        .depthBoundsTestEnable = VK_FALSE,
+        .stencilTestEnable = VK_FALSE,
     };
 
     VkGraphicsPipelineCreateInfo lights_ui_pipeline_info = {
@@ -1572,6 +1784,14 @@ static void render_swapchain_dependent_init()
 
     vkDestroyShaderModule(g_device, shader_stages[0].module, NULL);
     vkDestroyShaderModule(g_device, shader_stages[1].module, NULL);
+}
+
+static void render_swapchain_dependent_init()
+{
+    create_swapchain();
+    setup_final_render_pass();
+    setup_offscreen_render_pass();
+    setup_light_indicators_render_pass();
 }
 
 void render_draw_frame(vec3 cam_pos, vec3 cam_dir, vec3 cam_up) {
