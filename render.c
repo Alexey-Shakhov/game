@@ -856,10 +856,8 @@ void render_init() {
     render_swapchain_dependent_init();
 }
 
-static void render_swapchain_dependent_init()
+static void create_swapchain()
 {
-    // CREATE SWAPCHAIN
-    // Choose swap surface format
     uint32_t format_count;
     vkGetPhysicalDeviceSurfaceFormatsKHR(
                     g_physical_device, render.surface, &format_count, NULL);
@@ -984,6 +982,11 @@ static void render_swapchain_dependent_init()
             render.swapchain_format, VK_IMAGE_ASPECT_COLOR_BIT,
             &render.swapchain_image_views[i]);
     }
+}
+
+static void render_swapchain_dependent_init()
+{
+    create_swapchain();
 
     // FINAL COMPOSITION RENDER PASS AND FRAMEBUFFER
     struct VkAttachmentDescription color_attachment = {
@@ -1279,8 +1282,8 @@ static void render_swapchain_dependent_init()
         };
 
         if (vkCreateRenderPass(
-               g_device, &render_pass_info, NULL, &render.lights_ui_render_pass) !=
-               VK_SUCCESS) fatal("Failed to create render pass.");
+            g_device, &render_pass_info, NULL, &render.lights_ui_render_pass) !=
+            VK_SUCCESS) fatal("Failed to create render pass.");
 
         create_attachment(&render.object_code, render.swapchain_extent.width,
                 render.swapchain_extent.height, render.swapchain_format,
@@ -1301,7 +1304,6 @@ static void render_swapchain_dependent_init()
                 .height = render.swapchain_extent.height,
                 .layers = 1,
             };
-
             if (vkCreateFramebuffer(g_device, &framebuffer_info, NULL,
                     &render.lights_ui_framebuffers[i]) != VK_SUCCESS) {
                 fatal("Failed to create framebuffer.");
