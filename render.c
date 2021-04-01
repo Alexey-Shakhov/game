@@ -71,9 +71,9 @@ void destroy_texture(Texture* texture)
 
 typedef struct Light {
     vec3 pos;
-    uint32_t pad;
+    uint8_t code;
     vec3 color;
-    uint32_t pad2;
+    uint32_t pad;
 } Light;
 #define LIGHT_COUNT 2
 
@@ -1499,21 +1499,34 @@ static void setup_offscreen_render_pass()
         .initialLayout = VK_IMAGE_LAYOUT_UNDEFINED,
         .finalLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL,
     };
-    VkAttachmentDescription offscreen_descs[4] = {
-        position_attachment, normal_attachment, albedo_attachment,
-        offscreen_depth_attachment,
+
+    struct VkAttachmentDescription object_code_attachment = {
+        .format = VK_FORMAT_R8_UINT,
+        .samples = VK_SAMPLE_COUNT_1_BIT,
+        .loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR,
+        .storeOp = VK_ATTACHMENT_STORE_OP_STORE,
+        .stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE,
+        .stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE,
+        .initialLayout = VK_IMAGE_LAYOUT_UNDEFINED,
+        .finalLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
     };
-    VkAttachmentReference offscreen_color_refs[3] = {
+
+    VkAttachmentDescription offscreen_descs[5] = {
+        position_attachment, normal_attachment, albedo_attachment,
+        offscreen_depth_attachment, object_code_attachment
+    };
+    VkAttachmentReference offscreen_color_refs[4] = {
         {0, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL},
         {1, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL},
         {2, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL},
+        {4, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL},
     };
     VkAttachmentReference offscreen_depth_ref = {
         3, VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL};
 
     VkSubpassDescription offscreen_subpass = {
         .pipelineBindPoint = VK_PIPELINE_BIND_POINT_GRAPHICS,
-        .colorAttachmentCount = 3,
+        .colorAttachmentCount = 4,
         .pColorAttachments = offscreen_color_refs,
         .pDepthStencilAttachment = &offscreen_depth_ref,
     };
@@ -1544,7 +1557,7 @@ static void setup_offscreen_render_pass()
 
     VkRenderPassCreateInfo offscreen_render_pass_info = {
         .sType = VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO,
-        .attachmentCount = 4,
+        .attachmentCount = 5,
         .pAttachments = offscreen_descs,
         .subpassCount = 1,
         .pSubpasses = &offscreen_subpass,
@@ -1568,6 +1581,9 @@ static void setup_offscreen_render_pass()
             VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT);
     create_attachment(&render.offscreen_normal, render.swapchain_extent.width,
             render.swapchain_extent.height, normal_attachment.format,
+            VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT);
+    create_attachment(&render.object_code, render.swapchain_extent.width,
+            render.swapchain_extent.height, VK_FORMAT_R8_UINT,
             VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT);
 
     // Write G-buffer descriptors
@@ -1596,16 +1612,17 @@ static void setup_offscreen_render_pass()
     vkUpdateDescriptorSets(g_device, 1, &gbuf_desc_write, 0, NULL);
 
     // Offscreen framebuffer
-    VkImageView offscreen_attachments[4] = {
+    VkImageView offscreen_attachments[5] = {
         render.offscreen_position.view,
         render.offscreen_normal.view,
         render.offscreen_albedo.view,
         render.offscreen_depth.view,
+        render.object_code.view,
     };
     VkFramebufferCreateInfo offscreen_framebuffer_info = {
         .sType = VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO,
         .renderPass = render.offscreen_render_pass,
-        .attachmentCount = 4,
+        .attachmentCount = 5,
         .pAttachments = offscreen_attachments,
         .width = render.swapchain_extent.width,
         .height = render.swapchain_extent.height,
@@ -1720,14 +1737,15 @@ static void setup_offscreen_render_pass()
                           VK_COLOR_COMPONENT_R_BIT,
         .blendEnable = VK_FALSE,
     };
-    VkPipelineColorBlendAttachmentState blend_states[3] = {
+    VkPipelineColorBlendAttachmentState blend_states[4] = {
         color_blend_attachment, color_blend_attachment, color_blend_attachment, 
+        color_blend_attachment,
     };
 
     VkPipelineColorBlendStateCreateInfo color_blending = {
         .sType = VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO,
         .logicOpEnable = VK_FALSE,
-        .attachmentCount = 3,
+        .attachmentCount = 4,
         .pAttachments = blend_states,
     };
 
@@ -1796,11 +1814,11 @@ static void setup_light_indicators_render_pass()
     struct VkAttachmentDescription object_code_attachment = {
         .format = VK_FORMAT_R8_UINT,
         .samples = VK_SAMPLE_COUNT_1_BIT,
-        .loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR,
+        .loadOp = VK_ATTACHMENT_LOAD_OP_LOAD,
         .storeOp = VK_ATTACHMENT_STORE_OP_STORE,
         .stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE,
         .stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE,
-        .initialLayout = VK_IMAGE_LAYOUT_UNDEFINED,
+        .initialLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
         .finalLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
     };
 
@@ -1868,10 +1886,6 @@ static void setup_light_indicators_render_pass()
         g_device, &render_pass_info, NULL, &render.lights_ui_render_pass) !=
         VK_SUCCESS) fatal("Failed to create render pass.");
 
-    create_attachment(&render.object_code, render.swapchain_extent.width,
-            render.swapchain_extent.height, VK_FORMAT_R8_UINT,
-            VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT);
-
     for (int i=0; i < FRAMES_IN_FLIGHT; i++) {
         VkImageView attachments[3] = {
             render.swapchain_image_views[i],
@@ -1923,7 +1937,7 @@ static void setup_light_indicators_render_pass()
         .inputRate = VK_VERTEX_INPUT_RATE_VERTEX,
     };
 
-    VkVertexInputAttributeDescription lights_ui_attr_descs[2];
+    VkVertexInputAttributeDescription lights_ui_attr_descs[3];
     lights_ui_attr_descs[0].binding = 0;
     lights_ui_attr_descs[0].location = 0;
     lights_ui_attr_descs[0].format = VK_FORMAT_R32G32B32_SFLOAT; 
@@ -1934,11 +1948,16 @@ static void setup_light_indicators_render_pass()
     lights_ui_attr_descs[1].format = VK_FORMAT_R32G32B32_SFLOAT;
     lights_ui_attr_descs[1].offset = offsetof(Light, color);
 
+    lights_ui_attr_descs[2].binding = 0;
+    lights_ui_attr_descs[2].location = 2;
+    lights_ui_attr_descs[2].format = VK_FORMAT_R8_UINT;
+    lights_ui_attr_descs[2].offset = offsetof(Light, code);
+
     struct VkPipelineVertexInputStateCreateInfo lights_ui_input_info = {
         .sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO,
         .vertexBindingDescriptionCount = 1,
         .pVertexBindingDescriptions = &lights_ui_input_binding_description,
-        .vertexAttributeDescriptionCount = 2,
+        .vertexAttributeDescriptionCount = 3,
         .pVertexAttributeDescriptions = lights_ui_attr_descs,
     };
 
@@ -2104,11 +2123,12 @@ void render_draw_frame(vec3 cam_pos, vec3 cam_dir, vec3 cam_up) {
             VK_SUCCESS) {
         fatal("Failed to begin recording command buffer.");
     }
-    VkClearValue clear_values[4] = {
+    VkClearValue clear_values[5] = {
         { .color = {0.0f, 0.0f, 0.0f, 1.0f} },
         { .color = {0.0f, 0.0f, 0.0f, 1.0f} },
         { .color = {0.0f, 0.0f, 0.0f, 1.0f} },
         { .depthStencil = {1.0f, 0} },
+        { .color = {0.0f, 0.0f, 0.0f, 0.0f} },
     };
     VkRenderPassBeginInfo render_pass_info = {
         .sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO,
@@ -2116,7 +2136,7 @@ void render_draw_frame(vec3 cam_pos, vec3 cam_dir, vec3 cam_up) {
         .framebuffer = render.offscreen_framebuffer,
         .renderArea.offset = {0, 0},
         .renderArea.extent = render.swapchain_extent,
-        .clearValueCount = 4,
+        .clearValueCount = 5,
         .pClearValues = clear_values,
     };
 
@@ -2604,10 +2624,12 @@ void load_scene()
     Light light1 = {
         .pos = { 3.0, 6.0, 12.0 },
         .color = { 0.0, 0.0, 1.0 },
+        .code = 20,
     };
     Light light2 = {
         .pos = { -8.0, -2.0, 8.0 },
         .color = { 1.0, 1.0, 0.0 },
+        .code = 1,
     };
     Light lights[2] = {light1, light2};
 

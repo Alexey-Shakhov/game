@@ -10,9 +10,11 @@ layout(location = 2) in vec3 in_normal;
 layout(location = 0) out vec4 out_position;
 layout(location = 1) out vec4 out_normal;
 layout(location = 2) out vec4 out_albedo;
+layout(location = 3) out uvec4 out_code;
 
 void main() {
     out_position = in_world_pos;    
     out_normal = vec4(normalize(in_normal), 1.0);
     out_albedo = texture(tex_sampler, tex_coord);
+    out_code = uvec4(100, 0, 0, 0);
 }
