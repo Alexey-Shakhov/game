@@ -1794,7 +1794,7 @@ static void setup_light_indicators_render_pass()
     };
 
     struct VkAttachmentDescription object_code_attachment = {
-        .format = render.swapchain_format,
+        .format = VK_FORMAT_R8_UINT,
         .samples = VK_SAMPLE_COUNT_1_BIT,
         .loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR,
         .storeOp = VK_ATTACHMENT_STORE_OP_STORE,
@@ -1869,7 +1869,7 @@ static void setup_light_indicators_render_pass()
         VK_SUCCESS) fatal("Failed to create render pass.");
 
     create_attachment(&render.object_code, render.swapchain_extent.width,
-            render.swapchain_extent.height, render.swapchain_format,
+            render.swapchain_extent.height, VK_FORMAT_R8_UINT,
             VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT);
 
     for (int i=0; i < FRAMES_IN_FLIGHT; i++) {
