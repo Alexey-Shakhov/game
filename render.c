@@ -71,7 +71,7 @@ void destroy_texture(Texture* texture)
 
 typedef struct Light {
     vec3 pos;
-    uint8_t code;
+    uint32_t code;
     vec3 color;
     uint32_t pad;
 } Light;
@@ -1501,7 +1501,7 @@ static void setup_offscreen_render_pass()
     };
 
     struct VkAttachmentDescription object_code_attachment = {
-        .format = VK_FORMAT_R8_UINT,
+        .format = VK_FORMAT_R32_UINT,
         .samples = VK_SAMPLE_COUNT_1_BIT,
         .loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR,
         .storeOp = VK_ATTACHMENT_STORE_OP_STORE,
@@ -1583,7 +1583,7 @@ static void setup_offscreen_render_pass()
             render.swapchain_extent.height, normal_attachment.format,
             VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT);
     create_attachment(&render.object_code, render.swapchain_extent.width,
-            render.swapchain_extent.height, VK_FORMAT_R8_UINT,
+            render.swapchain_extent.height, VK_FORMAT_R32_UINT,
             VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT);
 
     // Write G-buffer descriptors
@@ -1812,7 +1812,7 @@ static void setup_light_indicators_render_pass()
     };
 
     struct VkAttachmentDescription object_code_attachment = {
-        .format = VK_FORMAT_R8_UINT,
+        .format = VK_FORMAT_R32_UINT,
         .samples = VK_SAMPLE_COUNT_1_BIT,
         .loadOp = VK_ATTACHMENT_LOAD_OP_LOAD,
         .storeOp = VK_ATTACHMENT_STORE_OP_STORE,
@@ -1950,7 +1950,7 @@ static void setup_light_indicators_render_pass()
 
     lights_ui_attr_descs[2].binding = 0;
     lights_ui_attr_descs[2].location = 2;
-    lights_ui_attr_descs[2].format = VK_FORMAT_R8_UINT;
+    lights_ui_attr_descs[2].format = VK_FORMAT_R32_UINT;
     lights_ui_attr_descs[2].offset = offsetof(Light, code);
 
     struct VkPipelineVertexInputStateCreateInfo lights_ui_input_info = {
