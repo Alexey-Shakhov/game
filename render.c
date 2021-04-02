@@ -524,6 +524,9 @@ typedef struct Render {
     VkSemaphore draw_finished_semaphore;
 
     size_t current_frame;
+
+    double timestamp;
+    uint32_t frames;
 } Render;
 static Render render;
 
@@ -1120,6 +1123,8 @@ void render_init() {
     setup_sync_primitives();
 
     render.current_frame = 0;
+    render.timestamp = 0.0;
+    render.frames = 0;
     render_swapchain_dependent_init();
 }
 
@@ -2197,6 +2202,13 @@ uint32_t read_object_code(uint32_t x, uint32_t y)
 void render_draw_frame(vec3 cam_pos, vec3 cam_dir, vec3 cam_up) {
     size_t current_frame = render.current_frame;
 
+    double time = glfwGetTime();
+    if (time - render.timestamp > 0.2) {
+        printf("fps: %f\n", render.frames / (time - render.timestamp));
+        render.frames = 0;
+        render.timestamp = time;
+    }
+
     // Upload MRT UBO
     MrtUbo uniform;
     mat4 proj;
@@ -2404,6 +2416,7 @@ void render_draw_frame(vec3 cam_pos, vec3 cam_dir, vec3 cam_up) {
     }
 
     render.current_frame = (current_frame + 1) % 2;
+    render.frames++;
 
     glfwPollEvents();
 }
