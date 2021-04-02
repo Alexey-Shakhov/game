@@ -136,7 +136,7 @@ static void create_2d_image(uint32_t width, uint32_t height,
 
     int memory_type_index = find_memory_type(
             memory_requirements,
-            VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT
+            properties
     );
     if (memory_type_index < 0) {
         fatal("Failed to find suitable memory type for image creation.");
@@ -2076,7 +2076,7 @@ static void render_swapchain_dependent_init()
     create_object_pick_pixel();
 }
 
-void read_object_code(uint32_t x, uint32_t y)
+uint32_t read_object_code(uint32_t x, uint32_t y)
 {
     // Transition the pixel to transfer dst layout
     VkCommandBuffer cmdbuf = begin_one_time_command_buffer(
@@ -2184,6 +2184,14 @@ void read_object_code(uint32_t x, uint32_t y)
     submit_one_time_command_buffer(
             render.graphics_queue, cmdbuf,
             render.graphics_command_pool);
+
+    // Read and return the pixel
+    const char* data;
+    vkMapMemory(g_device, render.object_pick_pixel_mem, 0, VK_WHOLE_SIZE,
+            0, (void**) &data);
+    uint32_t value = *((uint32_t*) data);
+    vkUnmapMemory(g_device, render.object_pick_pixel_mem);
+    return value;
 }
 
 void render_draw_frame(vec3 cam_pos, vec3 cam_dir, vec3 cam_up) {
@@ -2395,7 +2403,6 @@ void render_draw_frame(vec3 cam_pos, vec3 cam_dir, vec3 cam_up) {
         fatal("Failed to present swapchain image.");
     }
 
-    read_object_code(1, 1);
     render.current_frame = (current_frame + 1) % 2;
 
     glfwPollEvents();
