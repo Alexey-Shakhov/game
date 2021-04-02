@@ -493,6 +493,8 @@ typedef struct Render {
     Attachment offscreen_depth;
 
     Attachment object_code;
+    VkImage object_pick_pixel;
+    VkDeviceMemory object_pick_pixel_mem;
 
     VkFramebuffer framebuffers[FRAMES_IN_FLIGHT];
     VkFramebuffer lights_ui_framebuffers[FRAMES_IN_FLIGHT];
@@ -1092,6 +1094,14 @@ static void allocate_command_buffers()
     }
 }
 
+void create_object_pick_pixel()
+{
+    create_2d_image(1, 1, VK_SAMPLE_COUNT_1_BIT, VK_FORMAT_R32_UINT,
+        VK_IMAGE_TILING_LINEAR, VK_IMAGE_USAGE_TRANSFER_DST_BIT,
+        VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
+        &render.object_pick_pixel, &render.object_pick_pixel_mem);
+}
+
 void render_init() {
     create_window();
     create_instance();
@@ -1584,7 +1594,7 @@ static void setup_offscreen_render_pass()
             VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT);
     create_attachment(&render.object_code, render.swapchain_extent.width,
             render.swapchain_extent.height, VK_FORMAT_R32_UINT,
-            VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT);
+            VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT);
 
     // Write G-buffer descriptors
     VkDescriptorImageInfo gbuf_desc_info = {
@@ -2063,6 +2073,117 @@ static void render_swapchain_dependent_init()
     setup_final_render_pass();
     setup_offscreen_render_pass();
     setup_light_indicators_render_pass();
+    create_object_pick_pixel();
+}
+
+void read_object_code(uint32_t x, uint32_t y)
+{
+    // Transition the pixel to transfer dst layout
+    VkCommandBuffer cmdbuf = begin_one_time_command_buffer(
+            render.graphics_command_pool);
+    VkImageMemoryBarrier pixel_transfer_barrier = {
+        .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
+        .oldLayout = VK_IMAGE_LAYOUT_UNDEFINED,
+        .newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+        .srcAccessMask = 0,
+        .dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT,
+        .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+        .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+        .image = render.object_pick_pixel,
+        .subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
+        .subresourceRange.baseMipLevel = 0,
+        .subresourceRange.levelCount = 1,
+        .subresourceRange.baseArrayLayer = 0,
+        .subresourceRange.layerCount = 1,
+    };
+    vkCmdPipelineBarrier(cmdbuf, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
+            VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, NULL, 0, NULL, 1,
+            &pixel_transfer_barrier);
+
+    // Transition the color code attachment to transfer src layout
+    VkImageMemoryBarrier color_code_transfer_barrier = {
+        .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
+        .oldLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+        .newLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+        .srcAccessMask = 0,
+        .dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT,
+        .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+        .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+        .image = render.object_code.image,
+        .subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
+        .subresourceRange.baseMipLevel = 0,
+        .subresourceRange.levelCount = 1,
+        .subresourceRange.baseArrayLayer = 0,
+        .subresourceRange.layerCount = 1,
+    };
+    vkCmdPipelineBarrier(cmdbuf, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
+            VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, NULL, 0, NULL, 1,
+            &color_code_transfer_barrier);
+
+    // Blit the pixel
+    VkImageCopy copy = {
+        .srcSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
+        .srcSubresource.layerCount = 1,
+        .dstSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
+        .dstSubresource.layerCount = 1,
+        .srcOffset.x = x,
+        .srcOffset.y = y,
+        .srcOffset.z = 0,
+        .dstOffset.x = 0,
+        .dstOffset.y = 0,
+        .dstOffset.z = 0,
+        .extent.width = 1,
+        .extent.height = 1,
+        .extent.depth = 1,
+    };
+    vkCmdCopyImage(cmdbuf, render.object_code.image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+        render.object_pick_pixel, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+        1, &copy);
+
+    // Transition the pixel to general layout for reading (?)
+    VkImageMemoryBarrier pixel_general_layout_barrier = {
+        .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
+        .oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+        .newLayout = VK_IMAGE_LAYOUT_GENERAL,
+        .srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT,
+        .dstAccessMask = VK_ACCESS_MEMORY_READ_BIT,
+        .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+        .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+        .image = render.object_pick_pixel,
+        .subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
+        .subresourceRange.baseMipLevel = 0,
+        .subresourceRange.levelCount = 1,
+        .subresourceRange.baseArrayLayer = 0,
+        .subresourceRange.layerCount = 1,
+    };
+    vkCmdPipelineBarrier(cmdbuf, VK_PIPELINE_STAGE_TRANSFER_BIT,
+            VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, NULL, 0, NULL, 1,
+            &pixel_general_layout_barrier);
+
+
+    // Transition the color code attachment back to color attachment layout
+    VkImageMemoryBarrier color_code_attachment_barrier = {
+        .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
+        .oldLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+        .newLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+        .srcAccessMask = VK_ACCESS_TRANSFER_READ_BIT,
+        .dstAccessMask = VK_ACCESS_MEMORY_WRITE_BIT,
+        .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+        .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+        .image = render.object_code.image,
+        .subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
+        .subresourceRange.baseMipLevel = 0,
+        .subresourceRange.levelCount = 1,
+        .subresourceRange.baseArrayLayer = 0,
+        .subresourceRange.layerCount = 1,
+    };
+    vkCmdPipelineBarrier(cmdbuf, VK_PIPELINE_STAGE_TRANSFER_BIT,
+            VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, NULL, 0, NULL, 1,
+            &color_code_attachment_barrier);
+
+    submit_one_time_command_buffer(
+            render.graphics_queue, cmdbuf,
+            render.graphics_command_pool);
 }
 
 void render_draw_frame(vec3 cam_pos, vec3 cam_dir, vec3 cam_up) {
@@ -2274,6 +2395,7 @@ void render_draw_frame(vec3 cam_pos, vec3 cam_dir, vec3 cam_up) {
         fatal("Failed to present swapchain image.");
     }
 
+    read_object_code(1, 1);
     render.current_frame = (current_frame + 1) % 2;
 
     glfwPollEvents();
@@ -2676,6 +2798,8 @@ void load_scene()
 
 static void cleanup_swapchain()
 {
+    vkDestroyImage(g_device, render.object_pick_pixel, NULL);
+    vkFreeMemory(g_device, render.object_pick_pixel_mem, NULL);
     vkDestroyDescriptorPool(g_device, render.descriptor_pool, NULL);
     vkDestroyDescriptorPool(g_device, render.gbuf_descriptor_pool, NULL);
 
