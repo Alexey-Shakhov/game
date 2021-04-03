@@ -2,6 +2,7 @@
 #include "globals.h"
 #include "alloc.h"
 #include "utils.h"
+#include "scene.h"
 #include "render.h"
 
 #include "cglm/cglm.h"
@@ -10,6 +11,25 @@
 #define ROTATION_SPEED 0.001
 
 #define MLOOK_LIMIT (CGLM_PI/16)
+
+struct EdState {
+    bool lmb_pressed;
+    Node* sel_object;
+    Light* sel_light;
+};
+
+struct EdState ed_state = {
+    .lmb_pressed = false,
+    .sel_object = NULL,
+    .sel_light = NULL,
+};
+
+void mouse_button_callback(GLFWwindow* window, int button, int action, int mods)
+{
+    if (button == GLFW_MOUSE_BUTTON_LEFT && action == GLFW_PRESS) {
+        ed_state.lmb_pressed = true;
+    }
+}
 
 int main()
 {
@@ -25,13 +45,23 @@ int main()
     double mouse_x;
     double mouse_y;
     glfwGetCursorPos(g_window, &mouse_x, &mouse_y);
+    glfwSetMouseButtonCallback(g_window, mouse_button_callback);
     // Main loop
     while (!render_exit()) {
+        glfwPollEvents();
         if (glfwGetKey(g_window, GLFW_KEY_ESCAPE) == GLFW_PRESS) break;
 
         double elapsed = glfwGetTime() - now;
         if (elapsed < 0.01) continue;
         now = glfwGetTime();
+
+        double mouse_x_new;
+        double mouse_y_new;
+        glfwGetCursorPos(g_window, &mouse_x_new, &mouse_y_new);
+        double mouse_dx = mouse_x_new - mouse_x;
+        double mouse_dy = mouse_y_new - mouse_y;
+        mouse_x = mouse_x_new;
+        mouse_y = mouse_y_new;
 
         vec3 side;
         glm_vec3_cross(cam_dir, cam_up, side);
@@ -57,14 +87,7 @@ int main()
         glm_vec3_add(cam_pos, delta_dir, cam_pos);
         glm_vec3_add(cam_pos, delta_side, cam_pos);
 
-        double mouse_x_new;
-        double mouse_y_new;
-        glfwGetCursorPos(g_window, &mouse_x_new, &mouse_y_new);
-        double mouse_dx = mouse_x_new - mouse_x;
-        double mouse_dy = mouse_y_new - mouse_y;
-        glfwGetCursorPos(g_window, &mouse_x, &mouse_y);
         glm_vec3_rotate(cam_dir, -mouse_dx * ROTATION_SPEED, cam_up);
-
         float mlook_angle = -mouse_dy * ROTATION_SPEED;
         float up_cam_angle = glm_vec3_angle(cam_up, cam_dir); 
         if (mlook_angle > up_cam_angle - MLOOK_LIMIT)
@@ -74,6 +97,11 @@ int main()
         glm_vec3_rotate(cam_dir, mlook_angle, side);
 
         render_draw_frame(cam_pos, cam_dir, cam_up);
+
+        if (ed_state.lmb_pressed) {
+            ed_state.lmb_pressed = false;
+            uint32_t code = get_object_code(1366/2, 768/2);
+        }
     }
 
     render_destroy();

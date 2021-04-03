@@ -7,6 +7,7 @@ layout(location = 2) in vec2 tex_coord;
 layout(location = 0) out vec2 out_tex_coord;
 layout(location = 1) out vec4 out_world_pos;
 layout(location = 2) out vec3 out_normal;
+layout(location = 3) out uint out_node_id;
 
 layout(binding=0) uniform Uniform {
     mat4 view_proj;
@@ -14,6 +15,7 @@ layout(binding=0) uniform Uniform {
 
 layout(push_constant) uniform PushConsts {
     mat4 model;
+    uint node_id;
 } push_consts;
 
 out gl_PerVertex {
@@ -27,4 +29,5 @@ void main() {
 
     mat3 mnorm = transpose(inverse(mat3(push_consts.model)));
     out_normal = mnorm * normal;
+    out_node_id = push_consts.node_id;
 }

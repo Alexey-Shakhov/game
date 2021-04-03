@@ -12,8 +12,10 @@
 
 #include "utils.h"
 #include "alloc.h"
+#include "globals.h"
 
 #include "render.h"
+#include "scene.h"
 
 #define STB_IMAGE_IMPLEMENTATION
 #include "stb_image.h"
@@ -26,56 +28,6 @@
 extern GLFWwindow* g_window;
 
 VkPhysicalDevice g_physical_device;
-VkDevice g_device;
-
-// Scene structs
-typedef struct Primitive {
-    VkDescriptorSet texture;
-    uint32_t vertex_offset;
-    uint32_t index_offset;
-    uint32_t index_count;
-} Primitive;
-
-typedef struct Mesh {
-    Primitive* primitives;
-    uint32_t primitives_count;
-} Mesh;
-void destroy_mesh(Mesh* mesh)
-{
-    mem_free(mesh->primitives);
-}
-
-typedef struct Node Node;
-typedef struct Node {
-    Node* parent;
-    Node** children;
-    uint32_t children_count;
-    mat4 transform;
-    Mesh* mesh;
-} Node;
-
-#define MAX_TEXTURES 50
-typedef struct Texture {
-    VkImage image;
-    VkDeviceMemory memory;
-    VkImageView view;
-    VkDescriptorSet desc_set;
-} Texture;
-
-void destroy_texture(Texture* texture)
-{
-    vkDestroyImageView(g_device, texture->view, NULL);
-    vkDestroyImage(g_device, texture->image, NULL);
-    vkFreeMemory(g_device, texture->memory, NULL);
-}
-
-typedef struct Light {
-    vec3 pos;
-    uint32_t code;
-    vec3 color;
-    uint32_t pad;
-} Light;
-#define LIGHT_COUNT 2
 
 typedef struct Buffer {
     VkBuffer buffer;
@@ -422,6 +374,7 @@ typedef struct DeferredUbo {
 
 typedef struct PushConstants {
     mat4 model;
+    uint32_t node_id;
 } PushConstants;
 
 
@@ -2081,7 +2034,7 @@ static void render_swapchain_dependent_init()
     create_object_pick_pixel();
 }
 
-uint32_t read_object_code(uint32_t x, uint32_t y)
+uint32_t get_object_code(uint32_t x, uint32_t y)
 {
     // Transition the pixel to transfer dst layout
     VkCommandBuffer cmdbuf = begin_one_time_command_buffer(
@@ -2204,7 +2157,7 @@ void render_draw_frame(vec3 cam_pos, vec3 cam_dir, vec3 cam_up) {
 
     double time = glfwGetTime();
     if (time - render.timestamp > 0.2) {
-        printf("fps: %f\n", render.frames / (time - render.timestamp));
+        //printf("fps: %f\n", render.frames / (time - render.timestamp));
         render.frames = 0;
         render.timestamp = time;
     }
@@ -2302,15 +2255,16 @@ void render_draw_frame(vec3 cam_pos, vec3 cam_dir, vec3 cam_up) {
         Mesh* mesh = scene.nodes[n].mesh;
         if (!mesh) continue;
 
-        mat4 transform;
-        memcpy(transform, scene.nodes[n].transform, sizeof(transform));
+        PushConstants push_consts;
+        memcpy(push_consts.model, scene.nodes[n].transform, sizeof(push_consts.model));
         Node* parent = scene.nodes[n].parent;
         while (parent) {
             mat4 parent_transform;
             memcpy(parent_transform, parent->transform, sizeof(mat4));
-            glm_mat4_mul(parent_transform, transform, transform);
+            glm_mat4_mul(parent_transform, push_consts.model, push_consts.model);
             parent = parent->parent;
         }
+        push_consts.node_id = scene.nodes[n].id;
 
         vkCmdPushConstants(
                 render.command_buffer,
@@ -2318,7 +2272,7 @@ void render_draw_frame(vec3 cam_pos, vec3 cam_dir, vec3 cam_up) {
                 VK_SHADER_STAGE_VERTEX_BIT,
                 0,
                 sizeof(PushConstants),
-                &transform);
+                &push_consts);
 
         for (size_t p=0; p < mesh->primitives_count; p++) {
             Primitive* primitive = &mesh->primitives[p];
@@ -2417,8 +2371,6 @@ void render_draw_frame(vec3 cam_pos, vec3 cam_dir, vec3 cam_up) {
 
     render.current_frame = (current_frame + 1) % 2;
     render.frames++;
-
-    glfwPollEvents();
 }
 
 bool render_exit() {
@@ -2704,6 +2656,7 @@ void load_scene()
 
     for (size_t n=0; n < scene.node_count; n++) {
         Node* node = &scene.nodes[n];
+        node->id = n;
         cgltf_node* gltf_node = &gltf_nodes[n];
 
         mat4 transform = GLM_MAT4_IDENTITY_INIT;
@@ -2766,12 +2719,12 @@ void load_scene()
     Light light1 = {
         .pos = { 3.0, 6.0, 12.0 },
         .color = { 0.0, 0.0, 1.0 },
-        .code = 20,
+        .code = LIGHT_ID_OFFSET + 0,
     };
     Light light2 = {
         .pos = { -8.0, -2.0, 8.0 },
         .color = { 1.0, 1.0, 0.0 },
-        .code = 1,
+        .code = LIGHT_ID_OFFSET + 1,
     };
     Light lights[2] = {light1, light2};
 
