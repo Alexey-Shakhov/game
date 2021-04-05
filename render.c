@@ -29,11 +29,6 @@ extern GLFWwindow* g_window;
 
 VkPhysicalDevice g_physical_device;
 
-typedef struct Buffer {
-    VkBuffer buffer;
-    VkDeviceMemory memory;
-} Buffer;
-
 void destroy_buffer(Buffer* buffer)
 {
     vkDestroyBuffer(g_device, buffer->buffer, NULL);
@@ -325,42 +320,6 @@ static void device_local_buffer_from_data(
             queue,
             command_pool);
 }
-
-typedef struct Scene {
-    Mesh* meshes;
-    size_t mesh_count;
-    Node* nodes;
-    size_t node_count;
-    Texture* textures;
-    size_t texture_count;
-    Light* lights;
-    size_t light_count;
-
-    Buffer vertex_buffer;
-    Buffer index_buffer;
-    Buffer lights_buffer;
-} Scene;
-
-void destroy_scene(Scene* scene)
-{
-    for (size_t i=0; i < scene->node_count; i++) mem_free(scene->nodes[i].children);
-    mem_free(scene->nodes);
-    for (size_t i=0; i < scene->mesh_count; i++) {
-        destroy_mesh(&scene->meshes[i]);
-    }
-    mem_free(scene->meshes);
-    for (size_t i=0; i < scene->texture_count; i++) {     
-        destroy_texture(&scene->textures[i]);
-    } 
-    mem_free(scene->textures);
-    mem_free(scene->lights);
-
-    destroy_buffer(&scene->lights_buffer);
-    destroy_buffer(&scene->index_buffer);
-    destroy_buffer(&scene->vertex_buffer);
-}
-
-static Scene scene;
 
 
 typedef struct MrtUbo {
