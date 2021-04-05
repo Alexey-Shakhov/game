@@ -5,6 +5,7 @@
 
 #define MINFRAGMENT 64
 #define ZONEID 0xdeadbeef
+#define ALIGNMENT 16
 
 typedef struct Memblock Memblock;
 typedef struct Memblock {
@@ -50,8 +51,7 @@ void mem_init(size_t size)
 void* mem_alloc(size_t size)
 {
     size += sizeof(Memblock);
-    size = (size + 7) & ~7;
-
+    size = (size + ALIGNMENT - 1) & ~ (ALIGNMENT - 1); 
     Memblock* block = mainzone->rover;
     Memblock* start = block->prev;
     while (block->tag || block->size < size) {

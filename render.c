@@ -2615,7 +2615,7 @@ void load_scene()
 
     for (size_t n=0; n < scene.node_count; n++) {
         Node* node = &scene.nodes[n];
-        node->id = n;
+        node->id = n + 1;
         cgltf_node* gltf_node = &gltf_nodes[n];
 
         mat4 transform = GLM_MAT4_IDENTITY_INIT;
