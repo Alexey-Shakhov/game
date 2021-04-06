@@ -399,6 +399,9 @@ typedef struct Render {
     VkPipeline lights_ui_pipeline;
     VkCommandPool graphics_command_pool;
 
+    VkImage cursor_image;
+    VkDeviceMemory cursor_image_memory;
+
     Attachment offscreen_position;
     Attachment offscreen_normal;
     Attachment offscreen_albedo;
@@ -1017,6 +1020,107 @@ void create_object_pick_pixel()
         &render.object_pick_pixel, &render.object_pick_pixel_mem);
 }
 
+void load_blit_image(const char* filename, VkImage* image, VkDeviceMemory* memory)
+{
+    // Load pixels
+    int tex_width, tex_height, tex_channels;
+    stbi_uc* pixels = stbi_load(
+        filename, &tex_width, &tex_height, &tex_channels, STBI_rgb_alpha);
+    if (!pixels) fatal("Failed to load cursor image.");
+    uint32_t image_size = tex_width * tex_height * 4;
+
+    // Upload pixels to staging buffer
+    Buffer texture_staging = upload_data_to_staging_buffer(pixels, image_size);
+
+    stbi_image_free(pixels);
+
+    // Create texture image
+    create_2d_image(tex_width, tex_height,
+            VK_SAMPLE_COUNT_1_BIT, VK_FORMAT_R8G8B8A8_SRGB,
+            VK_IMAGE_TILING_OPTIMAL,
+            VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT,
+            VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, image, memory);
+
+    {
+        // Transition image layout for upload
+        VkCommandBuffer cmdbuf = begin_one_time_command_buffer(
+                render.graphics_command_pool);
+        VkImageMemoryBarrier barrier = {
+            .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
+            .oldLayout = VK_IMAGE_LAYOUT_UNDEFINED,
+            .newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+            .srcAccessMask = 0,
+            .dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT,
+            .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+            .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+            .image = *image,
+            .subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
+            .subresourceRange.baseMipLevel = 0,
+            .subresourceRange.levelCount = 1,
+            .subresourceRange.baseArrayLayer = 0,
+            .subresourceRange.layerCount = 1,
+        };
+        vkCmdPipelineBarrier(cmdbuf, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
+                VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, NULL, 0, NULL, 1, &barrier);
+        submit_one_time_command_buffer(
+                render.graphics_queue, cmdbuf,
+                render.graphics_command_pool);
+    }
+
+    {
+        // Copy staging buffer to image
+        VkCommandBuffer cmdbuf = begin_one_time_command_buffer(
+                render.graphics_command_pool);
+        VkBufferImageCopy region = {
+            .bufferOffset = 0,
+            .bufferRowLength = 0,
+            .bufferImageHeight = 0,
+            .imageSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
+            .imageSubresource.mipLevel = 0,
+            .imageSubresource.baseArrayLayer = 0,
+            .imageSubresource.layerCount = 1,
+            .imageOffset = {0, 0, 0},
+            .imageExtent = {
+                tex_width,
+                tex_height,
+                1
+            },
+        };
+        vkCmdCopyBufferToImage(cmdbuf, texture_staging.buffer, *image,
+                VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &region);
+        submit_one_time_command_buffer(render.graphics_queue, cmdbuf,
+                render.graphics_command_pool);
+
+        destroy_buffer(&texture_staging);
+    }
+
+    // Transition image layout for blitting
+    {
+        VkCommandBuffer cmdbuf = begin_one_time_command_buffer(
+                render.graphics_command_pool);
+        VkImageMemoryBarrier barrier = {
+            .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
+            .oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+            .newLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+            .srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT,
+            .dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT,
+            .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+            .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+            .image = *image,
+            .subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
+            .subresourceRange.baseMipLevel = 0,
+            .subresourceRange.levelCount = 1,
+            .subresourceRange.baseArrayLayer = 0,
+            .subresourceRange.layerCount = 1,
+        };
+        vkCmdPipelineBarrier(cmdbuf, VK_PIPELINE_STAGE_TRANSFER_BIT,
+                VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, NULL, 0, NULL, 1, &barrier);
+        submit_one_time_command_buffer(
+                render.graphics_queue, cmdbuf,
+                render.graphics_command_pool);
+    }
+}
+
 void render_init() {
     create_window();
     create_instance();
@@ -1033,10 +1137,12 @@ void render_init() {
     setup_texture_descriptor();
     setup_pipeline_layout();
     setup_sync_primitives();
+    load_blit_image("cursor.png", &render.cursor_image, &render.cursor_image_memory);
 
     render.current_frame = 0;
     render.timestamp = 0.0;
     render.frames = 0;
+    create_object_pick_pixel();
     render_swapchain_dependent_init();
 }
 
@@ -1990,7 +2096,6 @@ static void render_swapchain_dependent_init()
     setup_final_render_pass();
     setup_offscreen_render_pass();
     setup_light_indicators_render_pass();
-    create_object_pick_pixel();
 }
 
 uint32_t get_object_code(uint32_t x, uint32_t y)
@@ -2733,8 +2838,6 @@ void load_scene()
 
 static void cleanup_swapchain()
 {
-    vkDestroyImage(g_device, render.object_pick_pixel, NULL);
-    vkFreeMemory(g_device, render.object_pick_pixel_mem, NULL);
     vkDestroyDescriptorPool(g_device, render.descriptor_pool, NULL);
     vkDestroyDescriptorPool(g_device, render.gbuf_descriptor_pool, NULL);
 
@@ -2778,6 +2881,11 @@ void render_destroy()
 
     cleanup_swapchain();
     destroy_scene(&scene);
+
+    vkDestroyImage(g_device, render.cursor_image, NULL);
+    vkFreeMemory(g_device, render.cursor_image_memory, NULL);
+    vkDestroyImage(g_device, render.object_pick_pixel, NULL);
+    vkFreeMemory(g_device, render.object_pick_pixel_mem, NULL);
 
     destroy_buffer(&render.ubo_buffer);
     destroy_buffer(&render.deferred_ubo_buffer);

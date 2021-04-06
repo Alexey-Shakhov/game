@@ -53,6 +53,10 @@ int main()
     glfwSetMouseButtonCallback(g_window, mouse_button_callback);
     // Main loop
     while (!render_exit()) {
+        int frame_width;
+        int frame_height;
+        glfwGetFramebufferSize(g_window, &frame_width, &frame_height);
+
         glfwPollEvents();
         if (glfwGetKey(g_window, GLFW_KEY_ESCAPE) == GLFW_PRESS) break;
 
@@ -75,7 +79,7 @@ int main()
         if (ed_state.lmb_pressed) {
             ed_state.lmb_pressed = false;
             if (!ed_state.sel_object) {
-                uint32_t code = get_object_code(1366/2, 768/2);
+                uint32_t code = get_object_code(frame_width/2, frame_height/2);
                 if (code > 0) {
                     ed_state.sel_object = &scene.nodes[code-1];
                 }
