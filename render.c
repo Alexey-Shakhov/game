@@ -2215,11 +2215,11 @@ void render_draw_frame(vec3 cam_pos, vec3 cam_dir, vec3 cam_up) {
         if (!mesh) continue;
 
         PushConstants push_consts;
-        memcpy(push_consts.model, scene.nodes[n].transform, sizeof(push_consts.model));
+        node_make_matrix(&scene.nodes[n], push_consts.model);
         Node* parent = scene.nodes[n].parent;
         while (parent) {
             mat4 parent_transform;
-            memcpy(parent_transform, parent->transform, sizeof(mat4));
+            node_make_matrix(parent, parent_transform);
             glm_mat4_mul(parent_transform, push_consts.model, push_consts.model);
             parent = parent->parent;
         }
@@ -2618,19 +2618,22 @@ void load_scene()
         node->id = n + 1;
         cgltf_node* gltf_node = &gltf_nodes[n];
 
-        mat4 transform = GLM_MAT4_IDENTITY_INIT;
         DBASSERT(!gltf_node->has_matrix);
         if (gltf_node->has_translation) {
-            glm_translate(transform, gltf_node->translation);
+            glm_vec3_copy(gltf_node->translation, node->translation);
+        } else {
+            glm_vec3_zero(node->translation);
         }
         if (gltf_node->has_rotation) {
-            versor quat;
-            memcpy(quat, gltf_node->rotation, sizeof(vec4));
-            glm_quat_rotate(transform, quat, transform);
+            memcpy(node->rotation, gltf_node->rotation, sizeof(versor));
+        } else {
+            glm_quat_identity(node->rotation);
         }
-        if (gltf_node->has_scale) glm_scale(transform, gltf_node->scale);
-
-        memcpy(node->transform, transform, sizeof(mat4));
+        if (gltf_node->has_scale) {
+            glm_vec3_copy(gltf_node->scale, node->scale);
+        } else {
+            glm_vec3_one(node->scale);
+        }
 
         node->mesh = NULL;
         if (gltf_node->mesh) {

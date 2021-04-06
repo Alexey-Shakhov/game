@@ -7,11 +7,11 @@
 
 #include "cglm/cglm.h"
 
-#define MOVEMENT_SPEED 10
+#define MOVEMENT_SPEED 24
 #define ROTATION_SPEED 0.001
 
 #define MLOOK_LIMIT (CGLM_PI/16)
-#define OBJECT_MOVE_SPEED 0.01
+#define OBJECT_MOVE_SPEED 0.02
 
 struct EdState {
     bool lmb_pressed;
@@ -74,15 +74,14 @@ int main()
 
         if (ed_state.lmb_pressed) {
             ed_state.lmb_pressed = false;
-            uint32_t code = get_object_code(1366/2, 768/2);
-            if (code > 0) {
-                ed_state.sel_object = &scene.nodes[code-1];
+            if (!ed_state.sel_object) {
+                uint32_t code = get_object_code(1366/2, 768/2);
+                if (code > 0) {
+                    ed_state.sel_object = &scene.nodes[code-1];
+                }
+            } else {
+                ed_state.sel_object = NULL;
             }
-        }
-
-        if (ed_state.rmb_pressed) {
-            ed_state.rmb_pressed = false;
-            ed_state.sel_object = NULL;
         }
 
         if (ed_state.sel_object) {
@@ -92,8 +91,10 @@ int main()
             glm_vec3_scale(current_up, OBJECT_MOVE_SPEED * mouse_dy, offset_up);
             vec3 offset_side;
             glm_vec3_scale(side, OBJECT_MOVE_SPEED * mouse_dx, offset_side);
-            glm_translate(ed_state.sel_object->transform, offset_up);
-            glm_translate(ed_state.sel_object->transform, offset_side);
+            glm_vec3_add(ed_state.sel_object->translation, offset_up,
+                    ed_state.sel_object->translation);
+            glm_vec3_add(ed_state.sel_object->translation, offset_side,
+                    ed_state.sel_object->translation);
         } else {
             // Mouselook
             glm_vec3_rotate(cam_dir, -mouse_dx * ROTATION_SPEED, cam_up);
