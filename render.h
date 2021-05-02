@@ -19,13 +19,6 @@ typedef struct Vertex {
 } Vertex;
 void load_scene();
 
-typedef struct Buffer {
-    VkBuffer buffer;
-    VkDeviceMemory memory;
-} Buffer;
-
-void destroy_buffer(Buffer* buffer);
-
 #define LIGHT_ID_OFFSET 100000
 
 #endif

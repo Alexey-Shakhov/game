@@ -3,6 +3,7 @@
 
 #include <cglm/cglm.h>
 #include "render.h"
+#include "vkhelpers.h"
 
 typedef struct Primitive {
     VkDescriptorSet texture;

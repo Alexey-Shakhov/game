@@ -7,5 +7,6 @@
 #include <GLFW/glfw3.h>
 extern GLFWwindow* g_window;
 extern VkDevice g_device;
+extern VkPhysicalDevice g_physical_device;
 
 #endif
