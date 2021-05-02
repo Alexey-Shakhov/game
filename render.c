@@ -1009,28 +1009,8 @@ static void setup_final_render_pass()
         .pDepthStencilAttachment = NULL,
     };
 
-    struct VkSubpassDependency dependency_start = {
-        .srcSubpass = VK_SUBPASS_EXTERNAL,
-        .dstSubpass = 0,
-        .srcStageMask = VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT,
-        .dstStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
-        .srcAccessMask = VK_ACCESS_MEMORY_READ_BIT,
-        .dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_READ_BIT |
-                         VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT,
-        .dependencyFlags = VK_DEPENDENCY_BY_REGION_BIT,
-    };
-    struct VkSubpassDependency dependency_end = {
-        .srcSubpass = 0,
-        .dstSubpass = VK_SUBPASS_EXTERNAL,
-        .srcStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
-        .dstStageMask = VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT,
-        .srcAccessMask = VK_ACCESS_COLOR_ATTACHMENT_READ_BIT |
-                         VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT,
-        .dstAccessMask = VK_ACCESS_MEMORY_READ_BIT,
-        .dependencyFlags = VK_DEPENDENCY_BY_REGION_BIT,
-    };
     VkSubpassDependency dependencies[2] = {
-        dependency_start, dependency_end
+        default_start_dependency(), default_end_dependency()
     };
 
     VkRenderPassCreateInfo render_pass_info = {
@@ -1075,38 +1055,14 @@ static void setup_final_render_pass()
         .primitiveRestartEnable = VK_FALSE,
     };
 
-    const VkViewport viewport = {
-        .x = 0.0f,
-        .y = 0.0f,
-        .width  = (float) render.swapchain_extent.width,
-        .height = (float) render.swapchain_extent.height,
-        .minDepth = 0.0f,
-        .maxDepth = 1.0f,
-    };
+    const VkViewport viewport = default_viewport
+        (render.swapchain_extent.width, render.swapchain_extent.height);
+    const VkRect2D scissor = default_scissor(render.swapchain_extent);
+    const VkPipelineViewportStateCreateInfo viewport_state =
+        default_viewport_state(&viewport, &scissor);
 
-    const VkRect2D scissor = {
-        .offset = {0, 0},
-        .extent = render.swapchain_extent,
-    };
-
-    const VkPipelineViewportStateCreateInfo viewport_state = {
-        .sType = VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO,
-        .viewportCount = 1,
-        .pViewports = &viewport,
-        .scissorCount = 1,
-        .pScissors = &scissor,
-    };
-
-    VkPipelineRasterizationStateCreateInfo rasterizer = {
-        .sType = VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO,
-        .depthClampEnable = VK_FALSE,
-        .rasterizerDiscardEnable = VK_FALSE,
-        .lineWidth = 1.0f,
-        .polygonMode = VK_POLYGON_MODE_FILL,
-        .cullMode = VK_CULL_MODE_FRONT_BIT,
-        .frontFace = VK_FRONT_FACE_COUNTER_CLOCKWISE,
-        .depthBiasEnable = VK_FALSE,
-    };
+    VkPipelineRasterizationStateCreateInfo rasterizer =
+                            default_rasterizer(VK_CULL_MODE_FRONT_BIT);
 
     const VkPipelineMultisampleStateCreateInfo multisampling = {
         .sType = VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO,
@@ -1114,13 +1070,8 @@ static void setup_final_render_pass()
         .rasterizationSamples = VK_SAMPLE_COUNT_1_BIT,
     };
 
-    const VkPipelineColorBlendAttachmentState color_blend_attachment = {
-        .colorWriteMask = VK_COLOR_COMPONENT_A_BIT |
-                          VK_COLOR_COMPONENT_B_BIT |
-                          VK_COLOR_COMPONENT_G_BIT |
-                          VK_COLOR_COMPONENT_R_BIT,
-        .blendEnable = VK_FALSE,
-    };
+    const VkPipelineColorBlendAttachmentState color_blend_attachment =
+        default_color_blend_attachment_state();
 
     VkPipelineColorBlendStateCreateInfo color_blending = {
         .sType = VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO,
@@ -1129,33 +1080,18 @@ static void setup_final_render_pass()
         .pAttachments = &color_blend_attachment,
     };
 
-    const VkPipelineDepthStencilStateCreateInfo depth_stencil = {
-        .sType = VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO,
-        .depthTestEnable = VK_TRUE,
-        .depthWriteEnable = VK_TRUE,
-        .depthCompareOp = VK_COMPARE_OP_LESS,
-        .depthBoundsTestEnable = VK_FALSE,
-        .stencilTestEnable = VK_FALSE,
-    };
+    const VkPipelineDepthStencilStateCreateInfo depth_stencil =
+        default_depth_stencil_state();
 
     VkShaderModule deferred_vertex_shader = create_shader_module(
                     "./shaders/deferred.vert.spv");
     VkShaderModule deferred_fragment_shader = create_shader_module(
                 "./shaders/deferred.frag.spv");
 
-    struct VkPipelineShaderStageCreateInfo vertex_shader_stage_info = {
-        .sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
-        .stage = VK_SHADER_STAGE_VERTEX_BIT,
-        .module = deferred_vertex_shader,
-        .pName = "main",
-    };
-
-    struct VkPipelineShaderStageCreateInfo fragment_shader_stage_info = {
-        .sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
-        .stage = VK_SHADER_STAGE_FRAGMENT_BIT,
-        .module = deferred_fragment_shader,
-        .pName = "main",
-    };
+    VkPipelineShaderStageCreateInfo vertex_shader_stage_info =
+        shader_stage_info(VK_SHADER_STAGE_VERTEX_BIT, deferred_vertex_shader);
+    VkPipelineShaderStageCreateInfo fragment_shader_stage_info =
+        shader_stage_info(VK_SHADER_STAGE_FRAGMENT_BIT, deferred_fragment_shader);
 
     struct VkPipelineShaderStageCreateInfo shader_stages[2] = {
         vertex_shader_stage_info, fragment_shader_stage_info,
@@ -1269,28 +1205,8 @@ static void setup_offscreen_render_pass()
         .pDepthStencilAttachment = &offscreen_depth_ref,
     };
 
-    struct VkSubpassDependency dependency_start = {
-        .srcSubpass = VK_SUBPASS_EXTERNAL,
-        .dstSubpass = 0,
-        .srcStageMask = VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT,
-        .dstStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
-        .srcAccessMask = VK_ACCESS_MEMORY_READ_BIT,
-        .dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_READ_BIT |
-                         VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT,
-        .dependencyFlags = VK_DEPENDENCY_BY_REGION_BIT,
-    };
-    struct VkSubpassDependency dependency_end = {
-        .srcSubpass = 0,
-        .dstSubpass = VK_SUBPASS_EXTERNAL,
-        .srcStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
-        .dstStageMask = VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT,
-        .srcAccessMask = VK_ACCESS_COLOR_ATTACHMENT_READ_BIT |
-                         VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT,
-        .dstAccessMask = VK_ACCESS_MEMORY_READ_BIT,
-        .dependencyFlags = VK_DEPENDENCY_BY_REGION_BIT,
-    };
     VkSubpassDependency dependencies[2] = {
-        dependency_start, dependency_end
+        default_start_dependency(), default_end_dependency()
     };
 
     VkRenderPassCreateInfo offscreen_render_pass_info = {
@@ -1373,30 +1289,15 @@ static void setup_offscreen_render_pass()
     }
 
     // G-buffer write pipeline
-    VkPipelineRasterizationStateCreateInfo rasterizer = {
-        .sType = VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO,
-        .depthClampEnable = VK_FALSE,
-        .rasterizerDiscardEnable = VK_FALSE,
-        .lineWidth = 1.0f,
-        .polygonMode = VK_POLYGON_MODE_FILL,
-        .cullMode = VK_CULL_MODE_BACK_BIT,
-        .frontFace = VK_FRONT_FACE_COUNTER_CLOCKWISE,
-        .depthBiasEnable = VK_FALSE,
-    };
+    VkPipelineRasterizationStateCreateInfo rasterizer =
+                            default_rasterizer(VK_CULL_MODE_BACK_BIT);
 
-    struct VkPipelineShaderStageCreateInfo vertex_shader_stage_info = {
-        .sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
-        .stage = VK_SHADER_STAGE_VERTEX_BIT,
-        .module = create_shader_module("./shaders/mrt.vert.spv"),
-        .pName = "main",
-    };
-
-    struct VkPipelineShaderStageCreateInfo fragment_shader_stage_info = {
-        .sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
-        .stage = VK_SHADER_STAGE_FRAGMENT_BIT,
-        .module = create_shader_module("./shaders/mrt.frag.spv"),
-        .pName = "main",
-    };
+    VkPipelineShaderStageCreateInfo vertex_shader_stage_info =
+        shader_stage_info(VK_SHADER_STAGE_VERTEX_BIT,
+                    create_shader_module("./shaders/mrt.vert.spv"));
+    VkPipelineShaderStageCreateInfo fragment_shader_stage_info =
+        shader_stage_info(VK_SHADER_STAGE_FRAGMENT_BIT,
+                    create_shader_module("./shaders/mrt.frag.spv"));
 
     VkPipelineShaderStageCreateInfo shader_stages[2] = {
         vertex_shader_stage_info, fragment_shader_stage_info,
@@ -1440,27 +1341,11 @@ static void setup_offscreen_render_pass()
         .primitiveRestartEnable = VK_FALSE,
     };
 
-    const VkViewport viewport = {
-        .x = 0.0f,
-        .y = 0.0f,
-        .width  = (float) render.swapchain_extent.width,
-        .height = (float) render.swapchain_extent.height,
-        .minDepth = 0.0f,
-        .maxDepth = 1.0f,
-    };
-
-    const VkRect2D scissor = {
-        .offset = {0, 0},
-        .extent = render.swapchain_extent,
-    };
-
-    const VkPipelineViewportStateCreateInfo viewport_state = {
-        .sType = VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO,
-        .viewportCount = 1,
-        .pViewports = &viewport,
-        .scissorCount = 1,
-        .pScissors = &scissor,
-    };
+    const VkViewport viewport = default_viewport
+        (render.swapchain_extent.width, render.swapchain_extent.height);
+    const VkRect2D scissor = default_scissor(render.swapchain_extent);
+    const VkPipelineViewportStateCreateInfo viewport_state =
+        default_viewport_state(&viewport, &scissor);
 
     const VkPipelineMultisampleStateCreateInfo multisampling = {
         .sType = VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO,
@@ -1468,13 +1353,8 @@ static void setup_offscreen_render_pass()
         .rasterizationSamples = VK_SAMPLE_COUNT_1_BIT,
     };
 
-    const VkPipelineColorBlendAttachmentState color_blend_attachment = {
-        .colorWriteMask = VK_COLOR_COMPONENT_A_BIT |
-                          VK_COLOR_COMPONENT_B_BIT |
-                          VK_COLOR_COMPONENT_G_BIT |
-                          VK_COLOR_COMPONENT_R_BIT,
-        .blendEnable = VK_FALSE,
-    };
+    const VkPipelineColorBlendAttachmentState color_blend_attachment =
+        default_color_blend_attachment_state();
     VkPipelineColorBlendAttachmentState blend_states[4] = {
         color_blend_attachment, color_blend_attachment, color_blend_attachment, 
         color_blend_attachment,
@@ -1487,14 +1367,8 @@ static void setup_offscreen_render_pass()
         .pAttachments = blend_states,
     };
 
-    const VkPipelineDepthStencilStateCreateInfo depth_stencil = {
-        .sType = VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO,
-        .depthTestEnable = VK_TRUE,
-        .depthWriteEnable = VK_TRUE,
-        .depthCompareOp = VK_COMPARE_OP_LESS,
-        .depthBoundsTestEnable = VK_FALSE,
-        .stencilTestEnable = VK_FALSE,
-    };
+    const VkPipelineDepthStencilStateCreateInfo depth_stencil =
+        default_depth_stencil_state();
 
     VkGraphicsPipelineCreateInfo pipeline_info = {
         .sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO,
@@ -1586,28 +1460,8 @@ static void setup_light_indicators_render_pass()
         .pDepthStencilAttachment = &depth_ref,
     };
 
-    struct VkSubpassDependency dependency_start = {
-        .srcSubpass = VK_SUBPASS_EXTERNAL,
-        .dstSubpass = 0,
-        .srcStageMask = VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT,
-        .dstStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
-        .srcAccessMask = VK_ACCESS_MEMORY_READ_BIT,
-        .dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_READ_BIT |
-                         VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT,
-        .dependencyFlags = VK_DEPENDENCY_BY_REGION_BIT,
-    };
-    struct VkSubpassDependency dependency_end = {
-        .srcSubpass = 0,
-        .dstSubpass = VK_SUBPASS_EXTERNAL,
-        .srcStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
-        .dstStageMask = VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT,
-        .srcAccessMask = VK_ACCESS_COLOR_ATTACHMENT_READ_BIT |
-                         VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT,
-        .dstAccessMask = VK_ACCESS_MEMORY_READ_BIT,
-        .dependencyFlags = VK_DEPENDENCY_BY_REGION_BIT,
-    };
     VkSubpassDependency dependencies[2] = {
-        dependency_start, dependency_end
+        default_start_dependency(), default_end_dependency()
     };
 
     VkRenderPassCreateInfo render_pass_info = {
@@ -1651,19 +1505,12 @@ static void setup_light_indicators_render_pass()
         .primitiveRestartEnable = VK_FALSE,
     };
 
-    struct VkPipelineShaderStageCreateInfo vertex_shader_stage_info = {
-        .sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
-        .stage = VK_SHADER_STAGE_VERTEX_BIT,
-        .module = create_shader_module("./shaders/lights_ui.vert.spv"),
-        .pName = "main",
-    };
-
-    struct VkPipelineShaderStageCreateInfo fragment_shader_stage_info = {
-        .sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
-        .stage = VK_SHADER_STAGE_FRAGMENT_BIT,
-        .module = create_shader_module("./shaders/lights_ui.frag.spv"),
-        .pName = "main",
-    };
+    VkPipelineShaderStageCreateInfo vertex_shader_stage_info =
+        shader_stage_info(VK_SHADER_STAGE_VERTEX_BIT,
+                    create_shader_module("./shaders/lights_ui.vert.spv"));
+    VkPipelineShaderStageCreateInfo fragment_shader_stage_info =
+        shader_stage_info(VK_SHADER_STAGE_FRAGMENT_BIT,
+                    create_shader_module("./shaders/lights_ui.frag.spv"));
 
     VkPipelineShaderStageCreateInfo shader_stages[2] = {
         vertex_shader_stage_info, fragment_shader_stage_info,
@@ -1699,13 +1546,8 @@ static void setup_light_indicators_render_pass()
         .pVertexAttributeDescriptions = lights_ui_attr_descs,
     };
 
-    const VkPipelineColorBlendAttachmentState color_blend_attachment = {
-        .colorWriteMask = VK_COLOR_COMPONENT_A_BIT |
-                          VK_COLOR_COMPONENT_B_BIT |
-                          VK_COLOR_COMPONENT_G_BIT |
-                          VK_COLOR_COMPONENT_R_BIT,
-        .blendEnable = VK_FALSE,
-    };
+    const VkPipelineColorBlendAttachmentState color_blend_attachment =
+        default_color_blend_attachment_state();
 
     VkPipelineColorBlendAttachmentState lights_ui_blend_states[2] = {
         color_blend_attachment, color_blend_attachment 
@@ -1717,38 +1559,14 @@ static void setup_light_indicators_render_pass()
         .pAttachments = lights_ui_blend_states,
     };
 
-    const VkViewport viewport = {
-        .x = 0.0f,
-        .y = 0.0f,
-        .width  = (float) render.swapchain_extent.width,
-        .height = (float) render.swapchain_extent.height,
-        .minDepth = 0.0f,
-        .maxDepth = 1.0f,
-    };
+    const VkViewport viewport = default_viewport
+        (render.swapchain_extent.width, render.swapchain_extent.height);
+    const VkRect2D scissor = default_scissor(render.swapchain_extent);
+    const VkPipelineViewportStateCreateInfo viewport_state =
+        default_viewport_state(&viewport, &scissor);
 
-    const VkRect2D scissor = {
-        .offset = {0, 0},
-        .extent = render.swapchain_extent,
-    };
-
-    const VkPipelineViewportStateCreateInfo viewport_state = {
-        .sType = VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO,
-        .viewportCount = 1,
-        .pViewports = &viewport,
-        .scissorCount = 1,
-        .pScissors = &scissor,
-    };
-
-    VkPipelineRasterizationStateCreateInfo rasterizer = {
-        .sType = VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO,
-        .depthClampEnable = VK_FALSE,
-        .rasterizerDiscardEnable = VK_FALSE,
-        .lineWidth = 1.0f,
-        .polygonMode = VK_POLYGON_MODE_FILL,
-        .cullMode = VK_CULL_MODE_FRONT_BIT,
-        .frontFace = VK_FRONT_FACE_COUNTER_CLOCKWISE,
-        .depthBiasEnable = VK_FALSE,
-    };
+    VkPipelineRasterizationStateCreateInfo rasterizer =
+                            default_rasterizer(VK_CULL_MODE_FRONT_BIT);
 
     const VkPipelineMultisampleStateCreateInfo multisampling = {
         .sType = VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO,
@@ -1756,14 +1574,8 @@ static void setup_light_indicators_render_pass()
         .rasterizationSamples = VK_SAMPLE_COUNT_1_BIT,
     };
 
-    const VkPipelineDepthStencilStateCreateInfo depth_stencil = {
-        .sType = VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO,
-        .depthTestEnable = VK_TRUE,
-        .depthWriteEnable = VK_TRUE,
-        .depthCompareOp = VK_COMPARE_OP_LESS,
-        .depthBoundsTestEnable = VK_FALSE,
-        .stencilTestEnable = VK_FALSE,
-    };
+    const VkPipelineDepthStencilStateCreateInfo depth_stencil =
+        default_depth_stencil_state();
 
     VkGraphicsPipelineCreateInfo lights_ui_pipeline_info = {
         .sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO,

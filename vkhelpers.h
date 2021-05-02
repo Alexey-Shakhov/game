@@ -47,4 +47,16 @@ void device_local_buffer_from_data(
         VkCommandPool command_pool,
         Buffer* buffer);
 
+struct VkSubpassDependency default_start_dependency();
+struct VkSubpassDependency default_end_dependency();
+VkViewport default_viewport(float width, float height);
+VkRect2D default_scissor(VkExtent2D extent);
+VkPipelineViewportStateCreateInfo default_viewport_state(
+        const VkViewport* p_viewport, const VkRect2D* p_scissor);
+VkPipelineColorBlendAttachmentState default_color_blend_attachment_state();
+VkPipelineDepthStencilStateCreateInfo default_depth_stencil_state();
+VkPipelineRasterizationStateCreateInfo default_rasterizer(VkCullModeFlags cull_mode);
+VkPipelineShaderStageCreateInfo shader_stage_info(
+        VkShaderStageFlagBits stage, VkShaderModule module);
+
 #endif

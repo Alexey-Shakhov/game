@@ -296,3 +296,121 @@ void device_local_buffer_from_data(
             queue,
             command_pool);
 }
+
+// Initializers
+struct VkSubpassDependency default_start_dependency()
+{
+    struct VkSubpassDependency dependency_start = {
+        .srcSubpass = VK_SUBPASS_EXTERNAL,
+        .dstSubpass = 0,
+        .srcStageMask = VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT,
+        .dstStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
+        .srcAccessMask = VK_ACCESS_MEMORY_READ_BIT,
+        .dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_READ_BIT |
+                         VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT,
+        .dependencyFlags = VK_DEPENDENCY_BY_REGION_BIT,
+    };
+    return dependency_start;
+}
+
+struct VkSubpassDependency default_end_dependency()
+{
+    struct VkSubpassDependency dependency_end = {
+        .srcSubpass = 0,
+        .dstSubpass = VK_SUBPASS_EXTERNAL,
+        .srcStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
+        .dstStageMask = VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT,
+        .srcAccessMask = VK_ACCESS_COLOR_ATTACHMENT_READ_BIT |
+                         VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT,
+        .dstAccessMask = VK_ACCESS_MEMORY_READ_BIT,
+        .dependencyFlags = VK_DEPENDENCY_BY_REGION_BIT,
+    };
+    return dependency_end;
+}
+
+VkViewport default_viewport(float width, float height)
+{
+    VkViewport viewport = {
+        .x = 0.0f,
+        .y = 0.0f,
+        .width  = width,
+        .height = height,
+        .minDepth = 0.0f,
+        .maxDepth = 1.0f,
+    };
+    return viewport;
+}
+
+VkRect2D default_scissor(VkExtent2D extent)
+{
+    VkRect2D scissor = {
+        .offset = {0, 0},
+        .extent = extent,
+    };
+    return scissor;
+}
+
+VkPipelineViewportStateCreateInfo default_viewport_state(
+        const VkViewport* p_viewport, const VkRect2D* p_scissor)
+{
+    VkPipelineViewportStateCreateInfo viewport_state = {
+        .sType = VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO,
+        .viewportCount = 1,
+        .pViewports = p_viewport,
+        .scissorCount = 1,
+        .pScissors = p_scissor,
+    };
+    return viewport_state;
+}
+
+VkPipelineColorBlendAttachmentState default_color_blend_attachment_state()
+{
+    VkPipelineColorBlendAttachmentState color_blend_attachment = {
+        .colorWriteMask = VK_COLOR_COMPONENT_A_BIT |
+                          VK_COLOR_COMPONENT_B_BIT |
+                          VK_COLOR_COMPONENT_G_BIT |
+                          VK_COLOR_COMPONENT_R_BIT,
+        .blendEnable = VK_FALSE,
+    };
+    return color_blend_attachment;
+}
+
+VkPipelineDepthStencilStateCreateInfo default_depth_stencil_state()
+{
+    VkPipelineDepthStencilStateCreateInfo depth_stencil = {
+        .sType = VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO,
+        .depthTestEnable = VK_TRUE,
+        .depthWriteEnable = VK_TRUE,
+        .depthCompareOp = VK_COMPARE_OP_LESS,
+        .depthBoundsTestEnable = VK_FALSE,
+        .stencilTestEnable = VK_FALSE,
+    };
+    return depth_stencil;
+}
+
+VkPipelineRasterizationStateCreateInfo default_rasterizer(VkCullModeFlags cull_mode)
+{
+    VkPipelineRasterizationStateCreateInfo rasterizer = {
+        .sType = VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO,
+        .depthClampEnable = VK_FALSE,
+        .rasterizerDiscardEnable = VK_FALSE,
+        .lineWidth = 1.0f,
+        .polygonMode = VK_POLYGON_MODE_FILL,
+        .cullMode = cull_mode,
+        .frontFace = VK_FRONT_FACE_COUNTER_CLOCKWISE,
+        .depthBiasEnable = VK_FALSE,
+    };
+    return rasterizer;
+}
+
+VkPipelineShaderStageCreateInfo shader_stage_info(
+        VkShaderStageFlagBits stage, VkShaderModule module)
+{
+    struct VkPipelineShaderStageCreateInfo shader_stage = {
+        .sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
+        .stage = stage,
+        .module = module,
+        .pName = "main",
+    };
+    return shader_stage;
+}
