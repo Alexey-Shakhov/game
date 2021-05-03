@@ -112,6 +112,7 @@ typedef struct Render {
     VkCommandPool graphics_command_pool;
 
     Texture cursor;
+    Buffer cursor_vertex_buffer;
 
     Attachment offscreen_position;
     Attachment offscreen_normal;
@@ -994,6 +995,52 @@ void render_init() {
     create_object_pick_pixel();
     load_texture_from_file("cursor.png", &render.cursor);
 
+    Vertex2D cursor_verts[6];
+    cursor_verts[0].uv[0] = 0.0;
+    cursor_verts[0].uv[1] = 0.0;
+    cursor_verts[1].uv[0] = 1.0;
+    cursor_verts[1].uv[1] = 0.0;
+    cursor_verts[2].uv[0] = 0.0;
+    cursor_verts[2].uv[1] = 1.0;
+    cursor_verts[3].uv[0] = 1.0;
+    cursor_verts[3].uv[1] = 0.0;
+    cursor_verts[4].uv[0] = 1.0;
+    cursor_verts[4].uv[1] = 1.0;
+    cursor_verts[5].uv[0] = 0.0;
+    cursor_verts[5].uv[1] = 1.0;
+    int scrw;
+    int scrh;
+    glfwGetFramebufferSize(g_window, &scrw, &scrh);
+    float cursor_x = scrw/2;
+    float cursor_y = scrh/2;
+    float left = (cursor_x / scrw) * 2 - 1.0;
+    float top = (cursor_y / scrh) * 2 - 1.0;
+    float right = ((cursor_x + render.cursor.width) / scrw) * 2 - 1.0;
+    float bottom = ((cursor_y + render.cursor.height) / scrh) * 2 - 1.0;
+    cursor_verts[0].position[0] = left;
+    cursor_verts[0].position[1] = top;
+    cursor_verts[1].position[0] = right;
+    cursor_verts[1].position[1] = top;
+    cursor_verts[2].position[0] = left;
+    cursor_verts[2].position[1] = bottom;
+    cursor_verts[3].position[0] = right;
+    cursor_verts[3].position[1] = top;
+    cursor_verts[4].position[0] = right;
+    cursor_verts[4].position[1] = bottom;
+    cursor_verts[5].position[0] = left;
+    cursor_verts[5].position[1] = bottom;
+    printf("%f\n", left);
+    printf("%f\n", top);
+
+    device_local_buffer_from_data(
+            (void*) cursor_verts,
+            sizeof(Vertex2D) * 6,
+            VK_BUFFER_USAGE_VERTEX_BUFFER_BIT,
+            render.graphics_queue,
+            render.graphics_command_pool,
+            &render.cursor_vertex_buffer
+    );
+
     render.current_frame = 0;
     render.timestamp = 0.0;
     render.frames = 0;
@@ -1821,8 +1868,19 @@ static void setup_image_blit_render_pass()
         .rasterizationSamples = VK_SAMPLE_COUNT_1_BIT,
     };
 
-    const VkPipelineColorBlendAttachmentState color_blend_attachment =
-        default_color_blend_attachment_state();
+    VkPipelineColorBlendAttachmentState color_blend_attachment = {
+        .blendEnable = VK_TRUE,
+        .colorWriteMask = VK_COLOR_COMPONENT_A_BIT |
+                          VK_COLOR_COMPONENT_B_BIT |
+                          VK_COLOR_COMPONENT_G_BIT |
+                          VK_COLOR_COMPONENT_R_BIT,
+        .srcColorBlendFactor = VK_BLEND_FACTOR_SRC_ALPHA,
+        .dstColorBlendFactor = VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA,
+        .colorBlendOp = VK_BLEND_OP_ADD,
+        .srcAlphaBlendFactor = VK_BLEND_FACTOR_ONE,
+        .dstAlphaBlendFactor = VK_BLEND_FACTOR_ZERO,
+        .alphaBlendOp = VK_BLEND_OP_ADD,
+    };
 
     VkPipelineColorBlendStateCreateInfo color_blending = {
         .sType = VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO,
@@ -2224,6 +2282,19 @@ void render_draw_frame(vec3 cam_pos, vec3 cam_dir, vec3 cam_up) {
     render_pass_info.clearValueCount = 0;
     vkCmdBeginRenderPass(render.command_buffer, &render_pass_info,
             VK_SUBPASS_CONTENTS_INLINE);
+
+    // Draw the cursor
+
+    vkCmdBindDescriptorSets(
+        render.command_buffer,
+        VK_PIPELINE_BIND_POINT_GRAPHICS, render.graphics_pipeline_layout,
+        1, 1, &render.cursor.desc_set, 0, NULL);
+    vkCmdBindVertexBuffers(render.command_buffer, 0, 1,
+            &render.cursor_vertex_buffer.buffer, &offset);
+    vkCmdBindPipeline(render.command_buffer,
+            VK_PIPELINE_BIND_POINT_GRAPHICS, render.image_blit_pipeline);
+    vkCmdDraw(render.command_buffer, 6, 1, 0, 0);
+
     vkCmdEndRenderPass(render.command_buffer);
 
     if (vkEndCommandBuffer(render.command_buffer) != VK_SUCCESS) {
@@ -2584,6 +2655,8 @@ void render_destroy()
 
     cleanup_swapchain();
     destroy_scene(&scene);
+
+    destroy_buffer(&render.cursor_vertex_buffer);
 
     vkDestroyImage(g_device, render.object_pick_pixel, NULL);
     vkFreeMemory(g_device, render.object_pick_pixel_mem, NULL);
