@@ -25,6 +25,7 @@
 #define ENGINE_NAME "None"
 
 #define FRAMES_IN_FLIGHT 2
+#define MAX_TEXTURES 50
 
 typedef struct Vertex2D {
     vec2 position;

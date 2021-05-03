@@ -7,13 +7,6 @@ void destroy_mesh(Mesh* mesh)
     mem_free(mesh->primitives);
 }
 
-void destroy_texture(Texture* texture)
-{
-    vkDestroyImageView(g_device, texture->view, NULL);
-    vkDestroyImage(g_device, texture->image, NULL);
-    vkFreeMemory(g_device, texture->memory, NULL);
-}
-
 void node_make_matrix(Node* node, mat4 dest)
 {
     glm_mat4_identity(dest);

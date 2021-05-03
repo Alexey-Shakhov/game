@@ -40,16 +40,6 @@ typedef struct Light {
 } Light;
 #define LIGHT_COUNT 2
 
-#define MAX_TEXTURES 50
-typedef struct Texture {
-    VkImage image;
-    VkDeviceMemory memory;
-    VkImageView view;
-    VkDescriptorSet desc_set;
-} Texture;
-
-void destroy_texture(Texture* texture);
-
 typedef struct Scene {
     Mesh* meshes;
     size_t mesh_count;

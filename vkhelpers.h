@@ -8,8 +8,16 @@ typedef struct Buffer {
     VkBuffer buffer;
     VkDeviceMemory memory;
 } Buffer;
-
 void destroy_buffer(Buffer* buffer);
+
+typedef struct Texture {
+    VkImage image;
+    VkDeviceMemory memory;
+    VkImageView view;
+    VkDescriptorSet desc_set;
+} Texture;
+void destroy_texture(Texture* texture);
+
 int find_memory_type(
         VkMemoryRequirements memory_requirements,
         VkMemoryPropertyFlags required_properties);

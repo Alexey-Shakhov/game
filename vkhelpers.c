@@ -5,6 +5,13 @@
 #include "utils.h"
 #include "alloc.h"
 
+void destroy_texture(Texture* texture)
+{
+    vkDestroyImageView(g_device, texture->view, NULL);
+    vkDestroyImage(g_device, texture->image, NULL);
+    vkFreeMemory(g_device, texture->memory, NULL);
+}
+
 void destroy_buffer(Buffer* buffer)
 {
     vkDestroyBuffer(g_device, buffer->buffer, NULL);
