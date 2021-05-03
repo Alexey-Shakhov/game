@@ -111,8 +111,7 @@ typedef struct Render {
     VkPipeline image_blit_pipeline;
     VkCommandPool graphics_command_pool;
 
-    VkImage cursor_image;
-    VkDeviceMemory cursor_image_memory;
+    Texture cursor;
 
     Attachment offscreen_position;
     Attachment offscreen_normal;
@@ -156,6 +155,149 @@ typedef struct Render {
     uint32_t frames;
 } Render;
 static Render render;
+
+void load_texture(void* buffer, size_t len, Texture* texture)
+{
+    // Load pixels
+    int tex_width, tex_height, tex_channels;
+    stbi_uc* pixels = stbi_load_from_memory(
+        buffer, len, &tex_width, &tex_height, &tex_channels, STBI_rgb_alpha);
+    if (!pixels) fatal("Failed to load texture.");
+    uint32_t image_size = tex_width * tex_height * 4;
+
+    texture->width = tex_width;
+    texture->height = tex_height;
+
+    // Upload pixels to staging buffer
+    Buffer texture_staging = upload_data_to_staging_buffer(pixels, image_size);
+
+    stbi_image_free(pixels);
+
+    // Create texture image
+    create_2d_image(tex_width, tex_height,
+            VK_SAMPLE_COUNT_1_BIT, VK_FORMAT_R8G8B8A8_SRGB,
+            VK_IMAGE_TILING_OPTIMAL,
+            VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
+            VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, &texture->image, &texture->memory);
+
+    {
+    // Transition image layout for upload
+    VkCommandBuffer cmdbuf = begin_one_time_command_buffer(
+            render.graphics_command_pool);
+    VkImageMemoryBarrier barrier = {
+        .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
+        .oldLayout = VK_IMAGE_LAYOUT_UNDEFINED,
+        .newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+        .srcAccessMask = 0,
+        .dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT,
+        .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+        .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+        .image = texture->image,
+        .subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
+        .subresourceRange.baseMipLevel = 0,
+        .subresourceRange.levelCount = 1,
+        .subresourceRange.baseArrayLayer = 0,
+        .subresourceRange.layerCount = 1,
+    };
+    vkCmdPipelineBarrier(cmdbuf, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
+            VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, NULL, 0, NULL, 1, &barrier);
+    submit_one_time_command_buffer(
+            render.graphics_queue, cmdbuf,
+            render.graphics_command_pool);
+    }
+
+    {
+    // Copy staging buffer to image
+    VkCommandBuffer cmdbuf = begin_one_time_command_buffer(
+            render.graphics_command_pool);
+    VkBufferImageCopy region = {
+        .bufferOffset = 0,
+        .bufferRowLength = 0,
+        .bufferImageHeight = 0,
+        .imageSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
+        .imageSubresource.mipLevel = 0,
+        .imageSubresource.baseArrayLayer = 0,
+        .imageSubresource.layerCount = 1,
+        .imageOffset = {0, 0, 0},
+        .imageExtent = {
+            tex_width,
+            tex_height,
+            1
+        },
+    };
+    vkCmdCopyBufferToImage(cmdbuf, texture_staging.buffer, texture->image,
+            VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &region);
+    submit_one_time_command_buffer(render.graphics_queue, cmdbuf,
+            render.graphics_command_pool);
+
+    destroy_buffer(&texture_staging);
+    }
+    {
+    // Transition image layout for shader access
+    VkCommandBuffer cmdbuf = begin_one_time_command_buffer(
+            render.graphics_command_pool);
+    VkImageMemoryBarrier barrier = {
+        .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
+        .oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+        .newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+        .srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT,
+        .dstAccessMask = VK_ACCESS_SHADER_READ_BIT,
+        .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+        .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+        .image = texture->image,
+        .subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
+        .subresourceRange.baseMipLevel = 0,
+        .subresourceRange.levelCount = 1,
+        .subresourceRange.baseArrayLayer = 0,
+        .subresourceRange.layerCount = 1,
+    };
+    vkCmdPipelineBarrier(cmdbuf, VK_PIPELINE_STAGE_TRANSFER_BIT,
+            VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, 0, 0, NULL, 0, NULL, 1,
+            &barrier);
+    submit_one_time_command_buffer(
+            render.graphics_queue, cmdbuf,
+            render.graphics_command_pool);
+    }
+
+    create_2d_image_view(texture->image, VK_FORMAT_R8G8B8A8_SRGB,
+            VK_IMAGE_ASPECT_COLOR_BIT, &texture->view);
+
+    VkDescriptorSetAllocateInfo tex_set_alloc_info = {
+        .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO,
+        .descriptorPool = render.texture_descriptor_pool,
+        .descriptorSetCount = 1,
+        .pSetLayouts = &render.texture_set_layout,
+    };
+    if (vkAllocateDescriptorSets(
+            g_device, &tex_set_alloc_info, &texture->desc_set) != VK_SUCCESS) {
+        fatal("Failed to allocate descriptor sets.");
+    }
+
+    VkDescriptorImageInfo texture_info = {
+        .imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+        .imageView = texture->view,
+        .sampler = render.texture_sampler,
+    };
+    VkWriteDescriptorSet texture_write = {
+        .sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+        .dstSet = texture->desc_set,
+        .dstBinding = 0,
+        .dstArrayElement = 0,
+        .descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+        .descriptorCount = 1,
+        .pImageInfo = &texture_info,
+    };
+    vkUpdateDescriptorSets(g_device, 1, &texture_write, 0, NULL);
+}
+
+void load_texture_from_file(const char* filename, Texture* texture)
+{
+    char* buf;
+    size_t size;
+    read_binary_file(filename, &buf, &size);
+    load_texture(buf, size, texture);
+    mem_free(buf);
+}
 
 static void render_swapchain_dependent_init();
 static void recreate_swapchain();
@@ -849,12 +991,13 @@ void render_init() {
     setup_texture_descriptor();
     setup_pipeline_layout();
     setup_sync_primitives();
-    load_blit_image("cursor.png", &render.cursor_image, &render.cursor_image_memory);
+    create_object_pick_pixel();
+    load_texture_from_file("cursor.png", &render.cursor);
 
     render.current_frame = 0;
     render.timestamp = 0.0;
     render.frames = 0;
-    create_object_pick_pixel();
+
     render_swapchain_dependent_init();
 }
 
@@ -2130,137 +2273,6 @@ bool render_exit() {
     return glfwWindowShouldClose(g_window);
 }
 
-static void load_texture(void* buffer, size_t len, Texture* texture)
-{
-    // Load pixels
-    int tex_width, tex_height, tex_channels;
-    stbi_uc* pixels = stbi_load_from_memory(
-        buffer, len, &tex_width, &tex_height, &tex_channels, STBI_rgb_alpha);
-    if (!pixels) fatal("Failed to load texture.");
-    uint32_t image_size = tex_width * tex_height * 4;
-
-    // Upload pixels to staging buffer
-    Buffer texture_staging = upload_data_to_staging_buffer(pixels, image_size);
-
-    stbi_image_free(pixels);
-
-    // Create texture image
-    create_2d_image(tex_width, tex_height,
-            VK_SAMPLE_COUNT_1_BIT, VK_FORMAT_R8G8B8A8_SRGB,
-            VK_IMAGE_TILING_OPTIMAL,
-            VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
-            VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, &texture->image, &texture->memory);
-
-    {
-    // Transition image layout for upload
-    VkCommandBuffer cmdbuf = begin_one_time_command_buffer(
-            render.graphics_command_pool);
-    VkImageMemoryBarrier barrier = {
-        .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
-        .oldLayout = VK_IMAGE_LAYOUT_UNDEFINED,
-        .newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
-        .srcAccessMask = 0,
-        .dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT,
-        .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-        .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-        .image = texture->image,
-        .subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
-        .subresourceRange.baseMipLevel = 0,
-        .subresourceRange.levelCount = 1,
-        .subresourceRange.baseArrayLayer = 0,
-        .subresourceRange.layerCount = 1,
-    };
-    vkCmdPipelineBarrier(cmdbuf, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
-            VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, NULL, 0, NULL, 1, &barrier);
-    submit_one_time_command_buffer(
-            render.graphics_queue, cmdbuf,
-            render.graphics_command_pool);
-    }
-
-    {
-    // Copy staging buffer to image
-    VkCommandBuffer cmdbuf = begin_one_time_command_buffer(
-            render.graphics_command_pool);
-    VkBufferImageCopy region = {
-        .bufferOffset = 0,
-        .bufferRowLength = 0,
-        .bufferImageHeight = 0,
-        .imageSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
-        .imageSubresource.mipLevel = 0,
-        .imageSubresource.baseArrayLayer = 0,
-        .imageSubresource.layerCount = 1,
-        .imageOffset = {0, 0, 0},
-        .imageExtent = {
-            tex_width,
-            tex_height,
-            1
-        },
-    };
-    vkCmdCopyBufferToImage(cmdbuf, texture_staging.buffer, texture->image,
-            VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &region);
-    submit_one_time_command_buffer(render.graphics_queue, cmdbuf,
-            render.graphics_command_pool);
-
-    destroy_buffer(&texture_staging);
-    }
-    {
-    // Transition image layout for shader access
-    VkCommandBuffer cmdbuf = begin_one_time_command_buffer(
-            render.graphics_command_pool);
-    VkImageMemoryBarrier barrier = {
-        .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
-        .oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
-        .newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
-        .srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT,
-        .dstAccessMask = VK_ACCESS_SHADER_READ_BIT,
-        .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-        .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-        .image = texture->image,
-        .subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
-        .subresourceRange.baseMipLevel = 0,
-        .subresourceRange.levelCount = 1,
-        .subresourceRange.baseArrayLayer = 0,
-        .subresourceRange.layerCount = 1,
-    };
-    vkCmdPipelineBarrier(cmdbuf, VK_PIPELINE_STAGE_TRANSFER_BIT,
-            VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, 0, 0, NULL, 0, NULL, 1,
-            &barrier);
-    submit_one_time_command_buffer(
-            render.graphics_queue, cmdbuf,
-            render.graphics_command_pool);
-    }
-
-    create_2d_image_view(texture->image, VK_FORMAT_R8G8B8A8_SRGB,
-            VK_IMAGE_ASPECT_COLOR_BIT, &texture->view);
-
-    VkDescriptorSetAllocateInfo tex_set_alloc_info = {
-        .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO,
-        .descriptorPool = render.texture_descriptor_pool,
-        .descriptorSetCount = 1,
-        .pSetLayouts = &render.texture_set_layout,
-    };
-    if (vkAllocateDescriptorSets(
-            g_device, &tex_set_alloc_info, &texture->desc_set) != VK_SUCCESS) {
-        fatal("Failed to allocate descriptor sets.");
-    }
-
-    VkDescriptorImageInfo texture_info = {
-        .imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
-        .imageView = texture->view,
-        .sampler = render.texture_sampler,
-    };
-    VkWriteDescriptorSet texture_write = {
-        .sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
-        .dstSet = texture->desc_set,
-        .dstBinding = 0,
-        .dstArrayElement = 0,
-        .descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
-        .descriptorCount = 1,
-        .pImageInfo = &texture_info,
-    };
-    vkUpdateDescriptorSets(g_device, 1, &texture_write, 0, NULL);
-}
-
 void load_scene()
 {
     // LOAD GLTF
@@ -2573,10 +2585,10 @@ void render_destroy()
     cleanup_swapchain();
     destroy_scene(&scene);
 
-    vkDestroyImage(g_device, render.cursor_image, NULL);
-    vkFreeMemory(g_device, render.cursor_image_memory, NULL);
     vkDestroyImage(g_device, render.object_pick_pixel, NULL);
     vkFreeMemory(g_device, render.object_pick_pixel_mem, NULL);
+
+    destroy_texture(&render.cursor);
 
     destroy_buffer(&render.ubo_buffer);
     destroy_buffer(&render.deferred_ubo_buffer);

@@ -15,6 +15,8 @@ typedef struct Texture {
     VkDeviceMemory memory;
     VkImageView view;
     VkDescriptorSet desc_set;
+    int width;
+    int height;
 } Texture;
 void destroy_texture(Texture* texture);
 
