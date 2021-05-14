@@ -55,6 +55,12 @@ typedef struct Scene {
     Buffer lights_buffer;
 } Scene;
 
+typedef struct Vertex {
+    vec3 position;
+    vec2 tex_coord;
+    vec3 normal;
+} Vertex;
+
 void destroy_scene(Scene* scene);
 
 extern Scene scene;

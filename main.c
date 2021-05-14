@@ -11,7 +11,7 @@
 #define ROTATION_SPEED 0.001
 
 #define MLOOK_LIMIT (CGLM_PI/16)
-#define OBJECT_MOVE_SPEED 0.02
+#define OBJECT_MOVE_SPEED 0.015
 
 struct EdState {
     bool lmb_pressed;
