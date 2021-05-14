@@ -1,7 +1,6 @@
 #ifndef SCENE_H
 #define SCENE_H
 
-#include <cglm/cglm.h>
 #include "render.h"
 #include "vkhelpers.h"
 
