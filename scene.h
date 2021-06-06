@@ -39,6 +39,12 @@ typedef struct Light {
 } Light;
 #define LIGHT_COUNT 2
 
+typedef struct Vertex {
+    vec3 position;
+    vec2 tex_coord;
+    vec3 normal;
+} Vertex;
+
 typedef struct Scene {
     Mesh* meshes;
     size_t mesh_count;
@@ -49,16 +55,15 @@ typedef struct Scene {
     Light* lights;
     size_t light_count;
 
+    Vertex* vertices;
+    size_t vertex_count;
+    uint16_t* indices;
+    size_t index_count;
+
     Buffer vertex_buffer;
     Buffer index_buffer;
     Buffer lights_buffer;
 } Scene;
-
-typedef struct Vertex {
-    vec3 position;
-    vec2 tex_coord;
-    vec3 normal;
-} Vertex;
 
 void destroy_scene(Scene* scene);
 

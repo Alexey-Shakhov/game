@@ -141,19 +141,6 @@ int main()
     mem_check();
     mem_inspect();
     mem_shutdown();
-
-    Vertex vertices[3] = {
-        {
-            .position = {1.0, -1.0, 1.0},
-        },
-        {
-            .position = {-1.0, 1.0, 2.0},
-        },
-        {
-            .position = {1.0, 1.0, 1.0},
-        },
-    };
-    get_height(vertices, 3, 0.0, 0.0);
     
     printf("%s", "Success!\n");
     return EXIT_SUCCESS;

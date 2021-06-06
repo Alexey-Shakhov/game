@@ -2553,8 +2553,11 @@ void load_scene()
             render.graphics_command_pool,
             &scene.index_buffer
     );
-    mem_free(vertices);
-    mem_free(indices);
+
+    scene.vertices = vertices;
+    scene.vertex_count = vertex_count;
+    scene.indices = indices;
+    scene.index_count = index_count;
 
     // Load lights
     Light light1 = {
