@@ -2228,7 +2228,7 @@ void render_draw_frame(vec3 cam_pos, vec3 cam_dir, vec3 cam_up) {
             vkCmdBindDescriptorSets(
                 render.command_buffer,
                 VK_PIPELINE_BIND_POINT_GRAPHICS, render.graphics_pipeline_layout,
-                1, 1, &primitive->texture, 0, NULL);
+                1, 1, &scene.textures[primitive->texture_id].desc_set, 0, NULL);
             vkCmdDrawIndexed(render.command_buffer,
                 primitive->index_count, 1, primitive->index_offset,
                 primitive->vertex_offset, 0);
@@ -2420,7 +2420,7 @@ void load_scene()
             // Material
             size_t material_index = (size_t)(((char*)gltf_primitive->material -
                     (char*) gltf_data->materials) / sizeof(cgltf_material));
-            mesh->primitives[p].texture = scene.textures[material_index].desc_set;
+            mesh->primitives[p].texture_id = material_index;
 
             // Vertices
             mesh->primitives[p].vertex_offset = vertex_offset;

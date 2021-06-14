@@ -5,7 +5,7 @@
 #include "vkhelpers.h"
 
 typedef struct Primitive {
-    VkDescriptorSet texture;
+    uint32_t texture_id;
     uint32_t vertex_offset;
     uint32_t index_offset;
     uint32_t index_count;
