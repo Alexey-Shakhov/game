@@ -1,8 +1,7 @@
 #ifndef SCENE_H
 #define SCENE_H
 
-#include "render.h"
-#include "vkhelpers.h"
+#include <cglm/cglm.h>
 
 typedef struct Primitive {
     uint32_t texture_id;
@@ -57,10 +56,6 @@ typedef struct Scene {
     size_t vertex_count;
     uint16_t* indices;
     size_t index_count;
-
-    Buffer vertex_buffer;
-    Buffer index_buffer;
-    Buffer lights_buffer;
 } Scene;
 
 void destroy_scene(Scene* scene);

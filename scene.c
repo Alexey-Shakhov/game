@@ -25,10 +25,6 @@ void destroy_scene(Scene* scene)
     mem_free(scene->meshes);
     mem_free(scene->lights);
 
-    destroy_buffer(&scene->lights_buffer);
-    destroy_buffer(&scene->index_buffer);
-    destroy_buffer(&scene->vertex_buffer);
-
     mem_free(scene->vertices);
     mem_free(scene->indices);
 }

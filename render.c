@@ -155,6 +155,10 @@ typedef struct Render {
     Texture* textures;
     size_t texture_count;
 
+    Buffer vertex_buffer;
+    Buffer index_buffer;
+    Buffer lights_buffer;
+
     size_t current_frame;
     double timestamp;
     uint32_t frames;
@@ -2193,9 +2197,9 @@ void render_draw_frame(vec3 cam_pos, vec3 cam_dir, vec3 cam_up) {
 
     VkDeviceSize offset = 0;
     vkCmdBindVertexBuffers(render.command_buffer, 0, 1,
-            &scene.vertex_buffer.buffer, &offset);
+            &render.vertex_buffer.buffer, &offset);
     vkCmdBindIndexBuffer(
-            render.command_buffer, scene.index_buffer.buffer, 0,
+            render.command_buffer, render.index_buffer.buffer, 0,
             VK_INDEX_TYPE_UINT16);
     vkCmdBindDescriptorSets(render.command_buffer,
             VK_PIPELINE_BIND_POINT_GRAPHICS, render.graphics_pipeline_layout,
@@ -2272,7 +2276,7 @@ void render_draw_frame(vec3 cam_pos, vec3 cam_dir, vec3 cam_up) {
     vkCmdBeginRenderPass(render.command_buffer, &render_pass_info,
             VK_SUBPASS_CONTENTS_INLINE);
     vkCmdBindVertexBuffers(render.command_buffer, 0, 1,
-            &scene.lights_buffer.buffer, &offset);
+            &render.lights_buffer.buffer, &offset);
     vkCmdBindDescriptorSets(render.command_buffer,
             VK_PIPELINE_BIND_POINT_GRAPHICS, render.graphics_pipeline_layout,
             0, 1, &render.desc_set, 0, NULL);
@@ -2545,7 +2549,7 @@ void load_scene()
             VK_BUFFER_USAGE_VERTEX_BUFFER_BIT,
             render.graphics_queue,
             render.graphics_command_pool,
-            &scene.vertex_buffer
+            &render.vertex_buffer
     );
     device_local_buffer_from_data(
             (void*) indices,
@@ -2553,7 +2557,7 @@ void load_scene()
             VK_BUFFER_USAGE_INDEX_BUFFER_BIT,
             render.graphics_queue,
             render.graphics_command_pool,
-            &scene.index_buffer
+            &render.index_buffer
     );
 
     scene.vertices = vertices;
@@ -2584,19 +2588,19 @@ void load_scene()
                     VK_BUFFER_USAGE_TRANSFER_DST_BIT |
                     VK_BUFFER_USAGE_VERTEX_BUFFER_BIT,
             VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
-            &scene.lights_buffer
+            &render.lights_buffer
     );
     upload_to_device_local_buffer(
             (void*) lights,
             sizeof(Light) * LIGHT_COUNT,
-            &scene.lights_buffer,
+            &render.lights_buffer,
             render.graphics_queue,
             render.graphics_command_pool
     );
 
     // Deferred lights SBO
     VkDescriptorBufferInfo lights_sbo_info = {
-        .buffer = scene.lights_buffer.buffer,
+        .buffer = render.lights_buffer.buffer,
         .offset = 0,
         .range = sizeof(Light) * LIGHT_COUNT,
     };
@@ -2623,6 +2627,10 @@ void unload_scene()
         destroy_texture(&render.textures[i]);
     } 
     mem_free(render.textures);
+
+    destroy_buffer(&render.lights_buffer);
+    destroy_buffer(&render.index_buffer);
+    destroy_buffer(&render.vertex_buffer);
 }
 
 static void cleanup_swapchain()
