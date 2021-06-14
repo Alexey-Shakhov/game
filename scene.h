@@ -50,8 +50,6 @@ typedef struct Scene {
     size_t mesh_count;
     Node* nodes;
     size_t node_count;
-    Texture* textures;
-    size_t texture_count;
     Light* lights;
     size_t light_count;
 

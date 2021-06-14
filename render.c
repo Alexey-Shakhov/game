@@ -152,8 +152,10 @@ typedef struct Render {
     VkSemaphore image_available_semaphore;
     VkSemaphore draw_finished_semaphore;
 
-    size_t current_frame;
+    Texture* textures;
+    size_t texture_count;
 
+    size_t current_frame;
     double timestamp;
     uint32_t frames;
 } Render;
@@ -2228,7 +2230,7 @@ void render_draw_frame(vec3 cam_pos, vec3 cam_dir, vec3 cam_up) {
             vkCmdBindDescriptorSets(
                 render.command_buffer,
                 VK_PIPELINE_BIND_POINT_GRAPHICS, render.graphics_pipeline_layout,
-                1, 1, &scene.textures[primitive->texture_id].desc_set, 0, NULL);
+                1, 1, &render.textures[primitive->texture_id].desc_set, 0, NULL);
             vkCmdDrawIndexed(render.command_buffer,
                 primitive->index_count, 1, primitive->index_offset,
                 primitive->vertex_offset, 0);
@@ -2358,10 +2360,10 @@ void load_scene()
     if (gltf_result != cgltf_result_success) fatal("Failed to load GLTF buffers.");
     
     // Load materials
-    scene.texture_count = gltf_data->materials_count;
-    DBASSERT(scene.texture_count <= MAX_TEXTURES);
-    scene.textures = malloc_nofail(sizeof(Texture) * scene.texture_count);
-    for (size_t i=0; i < scene.texture_count; i++) {
+    render.texture_count = gltf_data->materials_count;
+    DBASSERT(render.texture_count <= MAX_TEXTURES);
+    render.textures = malloc_nofail(sizeof(Texture) * render.texture_count);
+    for (size_t i=0; i < render.texture_count; i++) {
         cgltf_material* gltf_material = &gltf_data->materials[i];
         DBASSERT(gltf_material->has_pbr_metallic_roughness);
         cgltf_texture_view* gltf_texture_view = 
@@ -2374,7 +2376,7 @@ void load_scene()
         void* image_data = image_buffer->data + image_buffer_view->offset;
         size_t image_size = image_buffer_view->size;
 
-        load_texture(image_data, image_size, &scene.textures[i]);
+        load_texture(image_data, image_size, &render.textures[i]);
     }
 
     scene.meshes = malloc_nofail(sizeof(Mesh) * gltf_data->meshes_count);
@@ -2613,6 +2615,16 @@ void load_scene()
     cgltf_free(gltf_data);
 }
 
+void unload_scene()
+{
+    destroy_scene(&scene);
+
+    for (size_t i=0; i < render.texture_count; i++) {     
+        destroy_texture(&render.textures[i]);
+    } 
+    mem_free(render.textures);
+}
+
 static void cleanup_swapchain()
 {
     vkDestroyDescriptorPool(g_device, render.descriptor_pool, NULL);
@@ -2659,7 +2671,7 @@ void render_destroy()
     vkDeviceWaitIdle(g_device);
 
     cleanup_swapchain();
-    destroy_scene(&scene);
+    unload_scene();
 
     destroy_buffer(&render.cursor_vertex_buffer);
 

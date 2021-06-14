@@ -23,10 +23,6 @@ void destroy_scene(Scene* scene)
         destroy_mesh(&scene->meshes[i]);
     }
     mem_free(scene->meshes);
-    for (size_t i=0; i < scene->texture_count; i++) {     
-        destroy_texture(&scene->textures[i]);
-    } 
-    mem_free(scene->textures);
     mem_free(scene->lights);
 
     destroy_buffer(&scene->lights_buffer);
